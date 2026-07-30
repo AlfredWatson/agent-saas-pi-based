@@ -4,7 +4,7 @@ from app.core.config import get_settings
 from app.db.models import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("+asyncpg", ""))
+config.set_main_option("sqlalchemy.url", str(get_settings().database_url.set(drivername="postgresql")))
 
 def run_migrations_online() -> None:
     engine = engine_from_config(config.get_section(config.config_ini_section), prefix="sqlalchemy.", poolclass=pool.NullPool)

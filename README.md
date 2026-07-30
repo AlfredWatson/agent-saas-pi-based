@@ -14,7 +14,7 @@ and owns active Pi SDK sessions and JSONL history.
 
 ## Local development
 
-1. Copy `.env.example` to `.env` and replace both secrets and the encryption key.
+1. Copy `.env.example` to `.env`, set `POSTGRES_*`, and replace both secrets and the encryption key.
 2. Start PostgreSQL with `docker compose -f infra/compose.dev.yml up -d`.
 3. Install Python dependencies with `uv sync`, then run
    `uv run uvicorn gateway.app.main:app --reload --port 8000`.

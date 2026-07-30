@@ -9,7 +9,12 @@ const registry = new SessionRegistry();
 const providers = [{ id: "anthropic", name: "Anthropic" }, { id: "openai", name: "OpenAI" }];
 
 function authenticated(request: Parameters<typeof tenantFrom>[0], reply: { code(code: number): { send(body: object): void } }): string | undefined {
-	try { return tenantFrom(request); } catch (error) { reply.code(401).send({ error: error instanceof Error ? error.message : "unauthorized" }); return undefined; }
+	try { 
+		return tenantFrom(request); 
+	} catch (error) { 
+		reply.code(401).send({ error: error instanceof Error ? error.message : "unauthorized" }); 
+		return undefined; 
+	}
 }
 
 app.get("/internal/v1/health", async () => ({ status: "ok" }));
