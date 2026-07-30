@@ -1,0 +1,8 @@
+[project]
+name = "pi-saas-gateway"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = ["fastapi>=0.115,<1", "uvicorn[standard]>=0.30,<1", "sqlalchemy[asyncio]>=2.0,<3", "asyncpg>=0.29,<1", "alembic>=1.13,<2", "pydantic-settings>=2.4,<3", "pydantic[email]>=2.4,<3", "PyJWT>=2.9,<3", "argon2-cffi>=23.1,<24", "cryptography>=43,<46", "httpx>=0.27,<1", "python-multipart>=0.0.9,<1"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
