@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { Readable } from "node:stream";
 import { config } from "./config.js";
 import { tenantFrom } from "./auth/internal-auth.js";
 import { SessionRegistry } from "./sessions/session-registry.js";
@@ -58,7 +59,13 @@ app.post<{ Params: { id: string }; Body: { content: string } }>("/internal/v1/se
 		if (event.type === "agent_settled") events.push(JSON.stringify({ type: "agent_settled" }));
 	});
 	void managed.session.prompt(request.body.content).catch((error: unknown) => events.push(JSON.stringify({ type: "error", error: "agent_failed" }))).finally(() => { managed.busy = false; unsubscribe(); });
-	return (async function* () { while (managed.busy || events.length > 0) { const event = events.shift(); if (event) yield `${event}\n`; else await new Promise((resolve) => setTimeout(resolve, 10)); } })();
+	return reply.send(Readable.from((async function* () {
+		while (managed.busy || events.length > 0) {
+			const event = events.shift();
+			if (event) yield `${event}\n`;
+			else await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+	})()));
 });
 for (const action of ["abort", "steer", "follow-up"] as const) app.post<{ Params: { id: string }; Body: { content?: string } }>(`/internal/v1/sessions/:id/${action}`, async (request, reply) => {
 	const tenant = authenticated(request, reply); if (!tenant) return;

@@ -104,3 +104,4 @@ memory-bank
 # 自定义
 pi-main/
 agent-runtime/node_modules/
+agent-runtime/.runtime-data/
