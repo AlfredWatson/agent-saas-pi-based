@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createAgentSession, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage, fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { config } from "../config.js";
 import type { ManagedSession } from "./session-registry.js";
 
@@ -11,13 +12,32 @@ function tenantPath(tenant: string, part: string): string {
 	return path;
 }
 
-export async function createSession(tenant: string, input: { workspace_key: string; model_id: string; thinking_level?: string; api_key?: string; provider_id?: string }): Promise<ManagedSession> {
+export type SessionInput = { workspace_key: string; model_id: string; thinking_level?: string; api_key: string; provider_id: string; session_file_key?: string };
+
+/** Runtime credentials deliberately live only in this ModelRuntime instance. */
+export async function createSession(tenant: string, input: SessionInput): Promise<ManagedSession> {
 	const workspace = tenantPath(tenant, join("workspaces", input.workspace_key));
 	const sessions = tenantPath(tenant, "sessions");
 	await Promise.all([mkdir(workspace, { recursive: true }), mkdir(sessions, { recursive: true })]);
-	const modelRuntime = await ModelRuntime.create();
-	if (input.api_key && input.provider_id) modelRuntime.setRuntimeApiKey(input.provider_id, input.api_key);
-	const { session } = await createAgentSession({ cwd: workspace, sessionManager: SessionManager.create(workspace, sessions), modelRuntime });
-	if (input.thinking_level) session.setThinkingLevel(input.thinking_level as never);
+	const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null });
+	if (input.provider_id === "faux") {
+		const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-1", name: "Faux 1", reasoning: true }] });
+		faux.setResponses([fauxAssistantMessage("OK")]);
+		modelRuntime.registerNativeProvider(faux.provider);
+	} else await modelRuntime.setRuntimeApiKey(input.provider_id, input.api_key);
+	const model = modelRuntime.getModel(input.provider_id, input.model_id);
+	if (!model) throw new Error("invalid_model");
+	const manager = input.session_file_key
+		? SessionManager.open(input.session_file_key, sessions, workspace)
+		: SessionManager.create(workspace, sessions);
+	const { session } = await createAgentSession({
+		cwd: workspace,
+		sessionManager: manager,
+		modelRuntime,
+		model,
+		thinkingLevel: input.thinking_level as never,
+		// SaaS smoke sessions are explicitly read-only.
+		tools: ["read", "grep", "find", "ls"],
+	});
 	return { tenant, session, busy: false, sessionFile: session.sessionFile };
 }

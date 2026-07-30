@@ -16,7 +16,7 @@ class RuntimeClient:
 
     async def health(self) -> None:
         async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.get(f"{self.base_url}/internal/v1/health", headers=self._headers("health"))
+            response = await client.get(f"{self.base_url}/internal/v1/health", headers=self._headers("00000000-0000-0000-0000-000000000000"))
             response.raise_for_status()
 
     async def providers(self, user_id: str) -> list[dict]:
@@ -25,9 +25,15 @@ class RuntimeClient:
             response.raise_for_status()
             return response.json()["providers"]
 
-    async def validate_provider(self, user_id: str, provider_id: str, api_key: str) -> list[str]:
+    async def accept_provider_binding(self, user_id: str, provider_id: str, api_key: str) -> None:
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.post(f"{self.base_url}/internal/v1/providers/validate", headers=self._headers(user_id), json={"provider_id": provider_id, "api_key": api_key})
+            response.raise_for_status()
+            return None
+
+    async def models(self, user_id: str, provider_id: str) -> list[dict]:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(f"{self.base_url}/internal/v1/models", headers=self._headers(user_id), params={"provider_id": provider_id})
             response.raise_for_status()
             return response.json()["models"]
 

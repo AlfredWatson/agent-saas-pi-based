@@ -23,13 +23,15 @@ async def providers(user: User = Depends(current_user)):
 
 @router.post("/provider-bindings", status_code=201)
 async def create_binding(body: BindingInput, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    models = await RuntimeClient().validate_provider(str(user.id), body.provider_id, body.api_key)
+    # This deliberately does not contact the model provider: validation happens on
+    # the first successful chat, when the credential is supplied to the Runtime.
+    await RuntimeClient().accept_provider_binding(str(user.id), body.provider_id, body.api_key)
     binding = ProviderBinding(user_id=user.id, provider_id=body.provider_id, display_name=body.display_name, ciphertext=b"", nonce=b"")
     db.add(binding)
     await db.flush()
     binding.ciphertext, binding.nonce = encrypt(body.api_key, f"{user.id}:{binding.id}:{body.provider_id}".encode())
     await db.commit()
-    return {"id": str(binding.id), "models": models}
+    return {"id": str(binding.id), "provider_id": binding.provider_id, "status": binding.status}
 
 @router.get("/provider-bindings")
 async def list_bindings(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
@@ -40,7 +42,7 @@ async def list_bindings(user: User = Depends(current_user), db: AsyncSession = D
 async def binding_models(binding_id: UUID, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     binding = await db.scalar(select(ProviderBinding).where(ProviderBinding.id == binding_id, ProviderBinding.user_id == user.id, ProviderBinding.status == "active"))
     if binding is None: raise HTTPException(404, "binding_not_found")
-    return {"models": await RuntimeClient().providers(str(user.id))}
+    return {"models": await RuntimeClient().models(str(user.id), binding.provider_id)}
 
 @router.delete("/provider-bindings/{binding_id}", status_code=204)
 async def delete_binding(binding_id: UUID, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):

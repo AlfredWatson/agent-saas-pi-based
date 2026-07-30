@@ -1,13 +1,14 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, LargeBinary, String, Text, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Index, LargeBinary, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import MetaData
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
-    pass
+    metadata = MetaData(schema="platform")
 
 
 class Timestamped:
@@ -43,6 +44,7 @@ class ProviderBinding(Timestamped, Base):
     nonce: Mapped[bytes] = mapped_column(LargeBinary(12))
     key_version: Mapped[int] = mapped_column(default=1)
     status: Mapped[str] = mapped_column(String(32), default="active")
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AgentProfile(Timestamped, Base):
@@ -72,8 +74,23 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agent_sessions.id"), index=True)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("agent_runs.id"), nullable=True, index=True)
     role: Mapped[str] = mapped_column(String(16))
     sequence: Mapped[int] = mapped_column()
     content: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default="completed")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agent_sessions.id"), index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="running")
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+Index("uq_agent_runs_one_running_session", AgentRun.session_id, unique=True, postgresql_where=text("status = 'running'"))
