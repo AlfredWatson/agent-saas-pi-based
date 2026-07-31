@@ -29,6 +29,11 @@ async def create_profile(body: ProfileInput, user: User = Depends(current_user),
     db.add(profile); await db.commit()
     return {"id": str(profile.id), "name": profile.name, "model_id": profile.model_id}
 
+@router.get("")
+async def list_profiles(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    rows = (await db.scalars(select(AgentProfile).where(AgentProfile.user_id == user.id).order_by(AgentProfile.created_at.desc()))).all()
+    return {"items": [{"id": str(item.id), "name": item.name, "model_id": item.model_id, "thinking_level": item.thinking_level} for item in rows]}
+
 @router.put("/{profile_id}")
 async def update_profile(profile_id: UUID, body: ProfileInput, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     profile = await db.scalar(select(AgentProfile).where(AgentProfile.id == profile_id, AgentProfile.user_id == user.id))

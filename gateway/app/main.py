@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import asyncio
+import logging
 from pathlib import Path
 from alembic import command
 from alembic.config import Config
@@ -8,10 +9,20 @@ from sqlalchemy import text
 
 from .api.v1 import auth, profiles, providers, sessions, workspaces
 from .clients.agent_runtime import RuntimeClient
+from .core.config import get_settings
 from .db.session import engine
+
+# Uvicorn configures this logger at INFO by default; application-module loggers
+# otherwise inherit the root WARNING level and their startup messages are hidden.
+logger = logging.getLogger("uvicorn.error")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    settings = get_settings()
+    logger.info(
+        "Business database connection: %s (schema=platform)",
+        settings.database_url.render_as_string(hide_password=True),
+    )
     # Schema changes are Alembic-owned; do not silently synthesize tables here.
     gateway_root = Path(__file__).parents[1]
     alembic = Config(str(gateway_root / "alembic.ini"))
@@ -28,4 +39,5 @@ async def lifespan(_: FastAPI):
     yield
 
 app = FastAPI(title="Pi SaaS Gateway", lifespan=lifespan)
-for route in (auth.router, providers.router, profiles.router, workspaces.router, sessions.router): app.include_router(route, prefix="/api/v1")
+for route in (auth.router, providers.router, profiles.router, workspaces.router, sessions.router): 
+    app.include_router(route, prefix="/api/v1")
