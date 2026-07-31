@@ -8,7 +8,7 @@ from getpass import getpass
 
 import httpx
 
-BASE_URL = os.getenv("GATEWAY_URL", "http://127.0.0.1:8000").rstrip("/")
+BASE_URL = os.getenv("GATEWAY_URL", "http://127.0.0.1:28297").rstrip("/")
 
 
 def show(step: str, response: httpx.Response) -> dict:
@@ -30,6 +30,34 @@ def choose_provider(providers: list[dict]) -> dict:
         provider_id = input("选择 Provider（输入 id）: ").strip()
         if provider_id in by_id:
             return by_id[provider_id]
+        print("输入无效，请从上方列表选择。")
+
+
+def choose_model(models: list[dict]) -> dict:
+    if not models:
+        raise RuntimeError("该 Provider 没有返回可选模型")
+    print("\n可选模型:")
+    for item in models:
+        print(f"- {item['id']}  {item.get('name', '')}")
+    by_id = {item["id"]: item for item in models}
+    while True:
+        model_id = input("选择模型（输入 id）: ").strip()
+        if model_id in by_id:
+            return by_id[model_id]
+        print("输入无效，请从上方列表选择。")
+
+
+def choose_thinking_level(model: dict) -> str | None:
+    levels = model.get("thinking_levels", [])
+    if not levels:
+        return None
+    print(f"可选推理强度: {', '.join(levels)}；直接回车使用默认值")
+    while True:
+        level = input("推理强度: ").strip()
+        if not level:
+            return None
+        if level in levels:
+            return level
         print("输入无效，请从上方列表选择。")
 
 
@@ -55,7 +83,22 @@ def main() -> None:
                 json={"provider_id": provider["id"], "display_name": f"api-test-{provider['id']}", "api_key": api_key},
             ),
         )
-        print(f"\n完成。Provider Binding ID: {binding['id']}")
+        model = choose_model(show("可用模型列表", client.get(f"{BASE_URL}/api/v1/provider-bindings/{binding['id']}/models", headers=headers))["models"])
+        thinking_level = choose_thinking_level(model)
+        profile = show(
+            "创建模型 Profile",
+            client.post(
+                f"{BASE_URL}/api/v1/agent-profiles",
+                headers=headers,
+                json={
+                    "name": f"api-test-{provider['id']}-{model['id']}",
+                    "provider_binding_id": binding["id"],
+                    "model_id": model["id"],
+                    "thinking_level": thinking_level,
+                },
+            ),
+        )
+        print(f"\n完成。Provider Binding ID: {binding['id']}；Profile ID: {profile['id']}")
 
 
 if __name__ == "__main__":
