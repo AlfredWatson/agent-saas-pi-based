@@ -105,3 +105,4 @@ memory-bank
 pi-main/
 agent-runtime/node_modules/
 agent-runtime/.runtime-data/
+.runtime-data/
