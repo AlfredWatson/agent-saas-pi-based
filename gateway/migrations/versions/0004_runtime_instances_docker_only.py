@@ -1,11 +1,11 @@
 """make runtime instance records Docker-only
 
-Revision ID: 0004_runtime_instances_docker_only
+Revision ID: 0004_runtime_docker_only
 Revises: 0003_runtime_instances
 """
 from alembic import op
 
-revision = "0004_runtime_instances_docker_only"
+revision = "0004_runtime_docker_only"
 down_revision = "0003_runtime_instances"
 branch_labels = None
 depends_on = None
