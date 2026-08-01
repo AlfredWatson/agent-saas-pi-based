@@ -24,5 +24,12 @@ and owns active Pi SDK sessions and JSONL history.
 The default Runtime catalog is intentionally limited. A production deployment
 must use a dedicated tenant container, a real secret store, an LLM gateway or
 short-lived runtime keys, and container/network limits. MCP, arbitrary
-extensions, dynamic Docker orchestration and a browser UI are intentionally out
-of scope for this phase.
+extensions and a browser UI are intentionally out of scope for this phase.
+
+## Per-user Docker Runtime
+
+Set `RUNTIME_BACKEND=docker` after importing the image described in
+[Runtime image delivery](docs/runtime-image.md). Gateway then creates one
+loopback-only Runtime container per user on demand. Runtime source is mounted
+read-only from `agent-runtime/src`; each user's workspace and Pi JSONL
+trajectory are mounted under `.runtime-data/tenants/<user-id>`.

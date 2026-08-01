@@ -94,3 +94,18 @@ class AgentRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 Index("uq_agent_runs_one_running_session", AgentRun.session_id, unique=True, postgresql_where=text("status = 'running'"))
+
+
+class RuntimeInstance(Timestamped, Base):
+    __tablename__ = "runtime_instances"
+    __table_args__ = (UniqueConstraint("user_id"),)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    backend: Mapped[str] = mapped_column(String(32))
+    container_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    container_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    image: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    host_port: Mapped[int | None] = mapped_column(nullable=True)
+    state: Mapped[str] = mapped_column(String(32), default="stopped")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

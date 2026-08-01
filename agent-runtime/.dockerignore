@@ -1,0 +1,4 @@
+node_modules
+.runtime-data
+test
+npm-debug.log

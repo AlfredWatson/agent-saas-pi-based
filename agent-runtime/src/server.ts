@@ -73,4 +73,4 @@ for (const action of ["abort", "steer", "follow-up"] as const) app.post<{ Params
 	if (action === "abort") await managed.session.abort(); else if (!managed.busy) return reply.code(409).send({ error: "session_not_running" }); else if (action === "steer") await managed.session.steer(request.body.content ?? ""); else await managed.session.followUp(request.body.content ?? "");
 	return { status: "accepted" };
 });
-await app.listen({ host: "127.0.0.1", port: config.port });
+await app.listen({ host: config.host, port: config.port });

@@ -19,6 +19,16 @@ class Settings(BaseSettings):
     encryption_key: str = ""
     runtime_url: str = "http://127.0.0.1:3000"
     runtime_shared_secret: str = "shared-dev"
+    runtime_backend: str = "local"
+    runtime_docker_image: str = "pi-saas-agent-runtime:0.82.1-dev"
+    runtime_docker_network: str = "pi-saas-runtime"
+    runtime_source_dir: Path = Path("agent-runtime/src")
+    runtime_data_host_root: Path = Path(".runtime-data")
+    runtime_start_timeout_seconds: int = Field(default=30, gt=0, le=300)
+    runtime_stop_timeout_seconds: int = Field(default=10, gt=0, le=120)
+    runtime_memory_limit: str = "1g"
+    runtime_nano_cpus: int = Field(default=1_000_000_000, gt=0)
+    runtime_pids_limit: int = Field(default=256, gt=0)
     jwt_issuer: str = "pi-saas"
     jwt_audience: str = "pi-saas-api"
 
@@ -31,6 +41,8 @@ class Settings(BaseSettings):
             raise ValueError("ENCRYPTION_KEY must be a configured 32-byte url-safe base64 key")
         if self.environment != "development" and not self.postgres_password:
             raise ValueError("POSTGRES_PASSWORD must be configured")
+        if self.runtime_backend not in {"local", "docker"}:
+            raise ValueError("RUNTIME_BACKEND must be local or docker")
         return self
 
     @property
@@ -43,6 +55,20 @@ class Settings(BaseSettings):
             port=self.postgres_port,
             database=self.postgres_database,
         )
+
+    @property
+    def project_root(self) -> Path:
+        return Path(__file__).parents[3]
+
+    @property
+    def resolved_runtime_source_dir(self) -> Path:
+        path = self.runtime_source_dir
+        return (self.project_root / path).resolve() if not path.is_absolute() else path.resolve()
+
+    @property
+    def resolved_runtime_data_host_root(self) -> Path:
+        path = self.runtime_data_host_root
+        return (self.project_root / path).resolve() if not path.is_absolute() else path.resolve()
 
 
 @lru_cache

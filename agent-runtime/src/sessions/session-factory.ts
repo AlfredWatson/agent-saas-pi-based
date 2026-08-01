@@ -18,7 +18,8 @@ export type SessionInput = { workspace_key: string; model_id: string; thinking_l
 export async function createSession(tenant: string, input: SessionInput): Promise<ManagedSession> {
 	const workspace = tenantPath(tenant, join("workspaces", input.workspace_key));
 	const sessions = tenantPath(tenant, "sessions");
-	await Promise.all([mkdir(workspace, { recursive: true }), mkdir(sessions, { recursive: true })]);
+	const agentDir = tenantPath(tenant, "agent");
+	await Promise.all([mkdir(workspace, { recursive: true }), mkdir(sessions, { recursive: true }), mkdir(agentDir, { recursive: true })]);
 	const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null });
 	if (input.provider_id === "faux") {
 		const faux = fauxProvider({ provider: "faux", models: [{ id: "faux-1", name: "Faux 1", reasoning: true }] });
@@ -32,12 +33,14 @@ export async function createSession(tenant: string, input: SessionInput): Promis
 		: SessionManager.create(workspace, sessions);
 	const { session } = await createAgentSession({
 		cwd: workspace,
+		agentDir,
 		sessionManager: manager,
 		modelRuntime,
 		model,
 		thinkingLevel: input.thinking_level as never,
-		// SaaS smoke sessions are explicitly read-only.
-		tools: ["read", "grep", "find", "ls"],
+		// Local smoke tests remain read-only; dedicated containers receive the
+		// same default built-ins as the Pi CLI.
+		tools: config.toolProfile() === "coding" ? ["read", "write", "edit", "bash"] : ["read", "grep", "find", "ls"],
 	});
 	return { tenant, session, busy: false, sessionFile: session.sessionFile };
 }

@@ -4,13 +4,15 @@ import logging
 from pathlib import Path
 from alembic import command
 from alembic.config import Config
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from .api.v1 import auth, profiles, providers, sessions, workspaces
+from .api.v1 import auth, profiles, providers, runtime, sessions, workspaces
 from .clients.agent_runtime import RuntimeClient
 from .core.config import get_settings
 from .db.session import engine
+from .services.runtime_locator import RuntimeUnavailableError
 
 # Uvicorn configures this logger at INFO by default; application-module loggers
 # otherwise inherit the root WARNING level and their startup messages are hidden.
@@ -39,5 +41,12 @@ async def lifespan(_: FastAPI):
     yield
 
 app = FastAPI(title="Pi SaaS Gateway", lifespan=lifespan)
-for route in (auth.router, providers.router, profiles.router, workspaces.router, sessions.router): 
+
+
+@app.exception_handler(RuntimeUnavailableError)
+async def runtime_unavailable(_: Request, __: RuntimeUnavailableError) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": "runtime_unavailable"})
+
+
+for route in (auth.router, providers.router, profiles.router, workspaces.router, runtime.router, sessions.router):
     app.include_router(route, prefix="/api/v1")
