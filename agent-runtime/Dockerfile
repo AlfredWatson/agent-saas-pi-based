@@ -13,7 +13,10 @@ COPY src ./src
 # therefore make the image's runtime code readable by that non-root UID.
 RUN chmod -R a+rX /opt/pi-runtime
 
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    RUNTIME_HOST=0.0.0.0 \
+    RUNTIME_PORT=3000 \
+    RUNTIME_DATA_ROOT=/runtime-data
 EXPOSE 3000
 HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=5 \
   CMD curl --fail --silent --show-error \

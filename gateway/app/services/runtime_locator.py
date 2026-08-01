@@ -31,7 +31,6 @@ class RuntimeEndpoint:
 
 @dataclass(frozen=True)
 class RuntimeStatus:
-    backend: str
     state: str
     image: str | None
     container_id: str | None
@@ -54,36 +53,6 @@ class RuntimeLocator:
 
     async def recreate(self, user_id: UUID) -> RuntimeEndpoint:
         raise NotImplementedError
-
-
-class LocalRuntimeLocator(RuntimeLocator):
-    def __init__(self, settings: Settings) -> None:
-        self.settings = settings
-
-    async def preflight(self) -> None:
-        await self._health()
-
-    async def ensure(self, user_id: UUID) -> RuntimeEndpoint:
-        await self._health()
-        return RuntimeEndpoint(self.settings.runtime_url.rstrip("/"), "running")
-
-    async def status(self, user_id: UUID) -> RuntimeStatus:
-        return RuntimeStatus("local", "running", None, None, None, None)
-
-    async def stop(self, user_id: UUID) -> RuntimeStatus:
-        raise RuntimeUnavailableError("local_runtime_cannot_be_stopped")
-
-    async def recreate(self, user_id: UUID) -> RuntimeEndpoint:
-        return await self.ensure(user_id)
-
-    async def _health(self) -> None:
-        headers = {"Authorization": f"Bearer {self.settings.runtime_shared_secret}", "X-Tenant-ID": "00000000-0000-0000-0000-000000000000"}
-        try:
-            async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
-                response = await client.get(f"{self.settings.runtime_url.rstrip('/')}/internal/v1/health", headers=headers)
-                response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise RuntimeUnavailableError("local_runtime_unavailable") from exc
 
 
 class DockerRuntimeLocator(RuntimeLocator):
@@ -111,7 +80,7 @@ class DockerRuntimeLocator(RuntimeLocator):
         async with SessionLocal() as db:
             instance = await db.scalar(select(RuntimeInstance).where(RuntimeInstance.user_id == user_id))
             if instance is None:
-                return RuntimeStatus("docker", "absent", self.settings.runtime_docker_image, None, None, None)
+                return RuntimeStatus("absent", self.settings.runtime_docker_image, None, None, None)
             await self._refresh_instance(db, instance)
             await db.commit()
             return self._status(instance)
@@ -122,7 +91,7 @@ class DockerRuntimeLocator(RuntimeLocator):
             async with SessionLocal() as db:
                 instance = await db.scalar(select(RuntimeInstance).where(RuntimeInstance.user_id == user_id))
                 if instance is None or not instance.container_id:
-                    return RuntimeStatus("docker", "absent", self.settings.runtime_docker_image, None, None, None)
+                    return RuntimeStatus("absent", self.settings.runtime_docker_image, None, None, None)
                 container = await self._container(instance.container_id)
                 if container is not None:
                     await asyncio.to_thread(container.stop, timeout=self.settings.runtime_stop_timeout_seconds)
@@ -149,11 +118,9 @@ class DockerRuntimeLocator(RuntimeLocator):
         async with SessionLocal() as db:
             instance = await db.scalar(select(RuntimeInstance).where(RuntimeInstance.user_id == user_id))
             if instance is None:
-                instance = RuntimeInstance(user_id=user_id, backend="docker", container_name=self._container_name(user_id), image=self.settings.runtime_docker_image)
+                instance = RuntimeInstance(user_id=user_id, container_name=self._container_name(user_id), image=self.settings.runtime_docker_image)
                 db.add(instance)
                 await db.flush()
-            if instance.backend != "docker":
-                raise RuntimeUnavailableError("runtime_backend_mismatch")
             try:
                 container = await self._container(instance.container_id) if instance.container_id else None
                 if container is None:
@@ -191,12 +158,8 @@ class DockerRuntimeLocator(RuntimeLocator):
             environment={
                 "TENANT_ID": str(user_id),
                 "RUNTIME_SHARED_SECRET": self.settings.runtime_shared_secret,
-                "RUNTIME_HOST": "0.0.0.0",
-                "RUNTIME_PORT": "3000",
-                "RUNTIME_DATA_ROOT": "/runtime-data",
                 "PI_CODING_AGENT_DIR": f"{container_path}/agent",
                 "HOME": f"{container_path}/home",
-                "RUNTIME_TOOL_PROFILE": "coding",
             },
             volumes={
                 str(self.settings.resolved_runtime_source_dir): {"bind": "/opt/pi-runtime/src", "mode": "ro"},
@@ -281,7 +244,7 @@ class DockerRuntimeLocator(RuntimeLocator):
 
     @staticmethod
     def _status(instance: RuntimeInstance) -> RuntimeStatus:
-        return RuntimeStatus(instance.backend, instance.state, instance.image, instance.container_id, instance.last_error, instance.last_seen_at)
+        return RuntimeStatus(instance.state, instance.image, instance.container_id, instance.last_error, instance.last_seen_at)
 
 
 _locator: RuntimeLocator | None = None
@@ -290,6 +253,5 @@ _locator: RuntimeLocator | None = None
 def get_runtime_locator() -> RuntimeLocator:
     global _locator
     if _locator is None:
-        settings = get_settings()
-        _locator = DockerRuntimeLocator(settings) if settings.runtime_backend == "docker" else LocalRuntimeLocator(settings)
+        _locator = DockerRuntimeLocator(get_settings())
     return _locator

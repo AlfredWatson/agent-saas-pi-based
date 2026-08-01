@@ -3,7 +3,7 @@
 First-phase multi-user control plane for `pi-coding-agent`.
 
 ```text
-Client -> FastAPI Gateway (:8000) -> Node Agent Runtime (:3000) -> Pi SDK
+Client -> FastAPI Gateway (:8000) -> per-user Docker Runtime (:3000) -> Pi SDK
                                   -> PostgreSQL
 ```
 
@@ -14,12 +14,12 @@ and owns active Pi SDK sessions and JSONL history.
 
 ## Local development
 
-1. Copy `.env.example` to `.env`, set `POSTGRES_*`, and replace both secrets and the encryption key.
-2. Start PostgreSQL with `docker compose -f infra/compose.dev.yml up -d`.
-3. Install Python dependencies with `uv sync`, then run
+1. Build/import the Runtime image as described in [Runtime image delivery](docs/runtime-image.md).
+2. Copy `.env.example` to `.env`, set `POSTGRES_*`, and replace both secrets and the encryption key.
+3. Ensure the Gateway host can access the Docker daemon; Gateway creates the dedicated Runtime containers.
+4. Start PostgreSQL with `docker compose -f infra/compose.dev.yml up -d`.
+5. Install Python dependencies with `uv sync`, then run
    `uv run uvicorn gateway.app.main:app --reload --port 8000`.
-4. Install runtime dependencies with `npm --prefix agent-runtime install --ignore-scripts`, then run
-   `npm --prefix agent-runtime run dev`.
 
 The default Runtime catalog is intentionally limited. A production deployment
 must use a dedicated tenant container, a real secret store, an LLM gateway or
@@ -28,8 +28,8 @@ extensions and a browser UI are intentionally out of scope for this phase.
 
 ## Per-user Docker Runtime
 
-Set `RUNTIME_BACKEND=docker` after importing the image described in
-[Runtime image delivery](docs/runtime-image.md). Gateway then creates one
-loopback-only Runtime container per user on demand. Runtime source is mounted
-read-only from `agent-runtime/src`; each user's workspace and Pi JSONL
-trajectory are mounted under `.runtime-data/tenants/<user-id>`.
+Runtime is Docker-only: Gateway creates one loopback-only container per user on
+demand. Runtime source is mounted read-only from `agent-runtime/src`; each
+user's workspace and Pi JSONL trajectory are mounted under
+`.runtime-data/tenants/<user-id>`. Each Runtime uses Pi's default `read`,
+`write`, `edit`, and `bash` tools.

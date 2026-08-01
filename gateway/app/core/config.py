@@ -17,9 +17,7 @@ class Settings(BaseSettings):
     environment: str = "development"
     jwt_secret: str = "development-only-secret-must-be-replaced"
     encryption_key: str = ""
-    runtime_url: str = "http://127.0.0.1:3000"
     runtime_shared_secret: str = "shared-dev"
-    runtime_backend: str = "local"
     runtime_docker_image: str = "pi-saas-agent-runtime:0.82.1-dev"
     runtime_docker_network: str = "pi-saas-runtime"
     runtime_source_dir: Path = Path("agent-runtime/src")
@@ -41,8 +39,6 @@ class Settings(BaseSettings):
             raise ValueError("ENCRYPTION_KEY must be a configured 32-byte url-safe base64 key")
         if self.environment != "development" and not self.postgres_password:
             raise ValueError("POSTGRES_PASSWORD must be configured")
-        if self.runtime_backend not in {"local", "docker"}:
-            raise ValueError("RUNTIME_BACKEND must be local or docker")
         return self
 
     @property

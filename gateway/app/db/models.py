@@ -101,7 +101,6 @@ class RuntimeInstance(Timestamped, Base):
     __table_args__ = (UniqueConstraint("user_id"),)
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
-    backend: Mapped[str] = mapped_column(String(32))
     container_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     container_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     image: Mapped[str | None] = mapped_column(String(256), nullable=True)

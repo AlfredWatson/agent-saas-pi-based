@@ -38,9 +38,6 @@ export async function createSession(tenant: string, input: SessionInput): Promis
 		modelRuntime,
 		model,
 		thinkingLevel: input.thinking_level as never,
-		// Local smoke tests remain read-only; dedicated containers receive the
-		// same default built-ins as the Pi CLI.
-		tools: config.toolProfile() === "coding" ? ["read", "write", "edit", "bash"] : ["read", "grep", "find", "ls"],
 	});
 	return { tenant, session, busy: false, sessionFile: session.sessionFile };
 }

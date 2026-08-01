@@ -219,7 +219,7 @@ Runtime 提供仅供 Gateway 调用的内部 API：
 - `GET /internal/v1/sessions/{id}/state`
 - `PUT /internal/v1/skills/{skill_version_id}`：同步并校验 Skill ZIP。
 
-所有接口校验 `Authorization: Bearer <RUNTIME_SHARED_SECRET>` 和 `X-Tenant-ID`。本地 `shared-dev` 模式允许多个租户，但所有目录必须位于：
+所有接口校验 `Authorization: Bearer <RUNTIME_SHARED_SECRET>` 和 `X-Tenant-ID`。Runtime 只以每用户独立 Docker 容器运行，容器固定对应的租户并拒绝不匹配的请求；所有目录必须位于：
 
 ```text
 RUNTIME_DATA_ROOT/
@@ -229,8 +229,6 @@ RUNTIME_DATA_ROOT/
     ├── sessions/
     └── skills/{skill_version_id}/
 ```
-
-生产 `dedicated` 模式通过 `TENANT_ID` 固定容器租户，并拒绝不匹配的请求。
 
 每个活动 Session 使用独立 `AgentSession`，由 `SessionRegistry` 管理：
 

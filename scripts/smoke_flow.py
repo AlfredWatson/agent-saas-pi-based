@@ -25,7 +25,7 @@ with httpx.Client(timeout=30, trust_env=False) as client:
     profile = client.post(f"{base}/api/v1/agent-profiles", headers=headers, json={"name": "smoke", "provider_binding_id": binding.json()["id"], "model_id": model_id, "thinking_level": os.getenv("SMOKE_THINKING") or None}); profile.raise_for_status()
     session = client.post(f"{base}/api/v1/sessions", headers=headers, json={"profile_id": profile.json()["id"], "workspace_id": workspace.json()["items"][0]["id"]}); session.raise_for_status()
     session_id = session.json()["id"]
-    with client.stream("POST", f"{base}/api/v1/sessions/{session_id}/messages:stream", headers=headers, json={"content": "Use only read tools if needed, then say OK."}) as stream:
+    with client.stream("POST", f"{base}/api/v1/sessions/{session_id}/messages:stream", headers=headers, json={"content": "Say OK."}) as stream:
         stream.raise_for_status(); events = [line for line in stream.iter_lines() if line.startswith("event: ")]
     assert "event: assistant.delta" in events and events[-1] == "event: done", events
     assert all(item in {"event: message.accepted", "event: assistant.delta", "event: tool.started", "event: tool.completed", "event: message.completed", "event: done"} for item in events), events
@@ -44,4 +44,4 @@ with httpx.Client(timeout=30, trust_env=False) as client:
         subprocess.run(restart, shell=True, check=True)
         with client.stream("POST", f"{base}/api/v1/sessions/{session_id}/messages:stream", headers=headers, json={"content": "Say OK after recovery."}) as resumed:
             resumed.raise_for_status(); assert "event: done" in [line for line in resumed.iter_lines() if line.startswith("event: ")]
-print("PASS: binding, catalog, profile, pure delta/read-only SSE, disconnect persistence, and optional runtime recovery")
+print("PASS: binding, catalog, profile, pure-delta SSE, disconnect persistence, and optional runtime recovery")

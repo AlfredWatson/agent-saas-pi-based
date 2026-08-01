@@ -9,7 +9,6 @@ router = APIRouter(prefix="/runtime", tags=["runtime"])
 
 def render(status):
     return {
-        "backend": status.backend,
         "state": status.state,
         "image": status.image,
         "container_id": status.container_id,
