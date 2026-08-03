@@ -36,14 +36,53 @@ def select_session(items: list[dict]) -> dict | None:
         print("输入无效，请从上方列表选择。")
 
 
-def create_session(client: httpx.Client, headers: dict[str, str]) -> dict:
+def select_workspace(client: httpx.Client, headers: dict[str, str]) -> dict:
+    while True:
+        workspaces = show("用户 Workspaces", client.get(f"{BASE_URL}/api/v1/workspaces", headers=headers))["items"]
+        current = next((item for item in workspaces if item["is_current"]), None)
+        if current is None:
+            raise RuntimeError("当前用户没有可用的 current Workspace")
+        print("\n可用 Workspaces:")
+        for item in workspaces:
+            marker = "（当前）" if item["is_current"] else ""
+            print(f"- {item['id']}  name={item['name']} status={item['status']} {marker}")
+        choice = input("选择 Workspace（输入 id；n 新建；直接回车使用当前）: ").strip()
+        if not choice:
+            return current
+        if choice == "n":
+            name = input("新 Workspace 名称（小写字母/数字/-/_，1-64 字符）: ").strip()
+            if not name:
+                print("Workspace 名称不能为空。")
+                continue
+            created = show("新建 Workspace", client.post(f"{BASE_URL}/api/v1/workspaces", headers=headers, json={"name": name}))
+            return show("切换 Workspace", client.post(f"{BASE_URL}/api/v1/workspaces/{created['id']}:switch", headers=headers))
+        selected = next((item for item in workspaces if item["id"] == choice), None)
+        if selected is None:
+            print("输入无效，请从上方列表选择。")
+            continue
+        if selected["status"] != "active":
+            print("该 Workspace 当前不可用。")
+            continue
+        if selected["is_current"]:
+            return selected
+        return show("切换 Workspace", client.post(f"{BASE_URL}/api/v1/workspaces/{selected['id']}:switch", headers=headers))
+
+
+def sessions_for_workspace(client: httpx.Client, headers: dict[str, str], workspace: dict) -> list[dict]:
+    session_ids = show("Workspace Sessions", client.get(f"{BASE_URL}/api/v1/workspaces/{workspace['id']}/sessions", headers=headers))["session_ids"]
+    sessions = show("历史 Sessions", client.get(f"{BASE_URL}/api/v1/sessions", headers=headers))["items"]
+    by_id = {item["id"]: item for item in sessions}
+    return [by_id[session_id] for session_id in session_ids if session_id in by_id]
+
+
+def create_session(client: httpx.Client, headers: dict[str, str], workspace: dict) -> dict:
     profiles = show("可用模型 Profiles", client.get(f"{BASE_URL}/api/v1/agent-profiles", headers=headers))["items"]
     if not profiles:
         raise RuntimeError("没有 Profile，无法新开 Session；请先完成 Provider 和模型 Profile 配置。")
-    workspaces = show("默认 Workspace", client.get(f"{BASE_URL}/api/v1/workspaces", headers=headers))["items"]
-    if not workspaces:
-        raise RuntimeError("没有 Workspace，无法新开 Session")
-    session = show("新开 Session", client.post(f"{BASE_URL}/api/v1/sessions", headers=headers, json={"profile_id": profiles[0]["id"], "workspace_id": workspaces[0]["id"]}))
+    # Deliberately omit workspace_id: this verifies that the Gateway selects the
+    # Workspace made current by the step above.
+    session = show("新开 Session（使用当前 Workspace）", client.post(f"{BASE_URL}/api/v1/sessions", headers=headers, json={"profile_id": profiles[0]["id"]}))
+    print(f"使用 Workspace: {workspace['name']} ({workspace['id']})")
     print(f"使用最新 Profile: {profiles[0]['name']} ({profiles[0]['model_id']})")
     return session
 
@@ -103,9 +142,10 @@ def main() -> None:
     with httpx.Client(timeout=60, trust_env=False) as client:
         login = show("用户登录", client.post(f"{BASE_URL}/api/v1/auth/login", json={"email": email, "password": password}))
         headers = {"Authorization": f"Bearer {login['access_token']}"}
-        session = select_session(show("历史 Sessions", client.get(f"{BASE_URL}/api/v1/sessions", headers=headers))["items"])
+        workspace = select_workspace(client, headers)
+        session = select_session(sessions_for_workspace(client, headers, workspace))
         if session is None:
-            session = create_session(client, headers)
+            session = create_session(client, headers, workspace)
         show_history(client, headers, session["id"])
         task = input("\n用户任务指令: ").strip()
         if not task:
