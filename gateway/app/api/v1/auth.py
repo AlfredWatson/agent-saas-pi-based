@@ -22,7 +22,7 @@ async def register(body: Credentials, db: AsyncSession = Depends(get_db)):
     user = User(email=email, password_hash=hash_password(body.password))
     db.add(user)
     await db.flush()
-    db.add(Workspace(user_id=user.id, name="Default", storage_key=str(user.id).replace("-", "")))
+    db.add(Workspace(user_id=user.id, name="default", storage_key="default", is_current=True))
     await db.commit()
     return {"access_token": create_token(str(user.id)), "token_type": "bearer"}
 

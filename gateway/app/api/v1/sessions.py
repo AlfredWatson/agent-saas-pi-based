@@ -17,11 +17,12 @@ from ...db.models import AgentProfile, AgentRun, AgentSession, ChatMessage, Prov
 from ...db.session import SessionLocal, get_db
 from ...services.tool_payloads import safe_tool_content, safe_tool_payload
 from ...core.config import get_settings
+from .workspaces import current_workspace, enforce_workspace_storage_limit
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 _subscribers: dict[UUID, set[asyncio.Queue[tuple[str, dict]]]] = {}
 
-class SessionInput(BaseModel): profile_id: UUID; workspace_id: UUID
+class SessionInput(BaseModel): profile_id: UUID; workspace_id: UUID | None = None
 class MessageInput(BaseModel): content: str = Field(min_length=1, max_length=100_000)
 
 async def owned(session_id: UUID, user: User, db: AsyncSession) -> AgentSession:
@@ -32,7 +33,7 @@ async def owned(session_id: UUID, user: User, db: AsyncSession) -> AgentSession:
 async def runtime_payload(db: AsyncSession, session: AgentSession, user_id: UUID) -> dict:
     profile = await db.scalar(select(AgentProfile).where(AgentProfile.id == session.profile_id, AgentProfile.user_id == user_id))
     workspace = await db.scalar(select(Workspace).where(Workspace.id == session.workspace_id, Workspace.user_id == user_id))
-    if not profile or not workspace: raise HTTPException(422, "invalid_session_configuration")
+    if not profile or not workspace or workspace.status != "active": raise HTTPException(422, "invalid_session_configuration")
     binding = await db.scalar(select(ProviderBinding).where(ProviderBinding.id == profile.provider_binding_id, ProviderBinding.user_id == user_id, ProviderBinding.status == "active"))
     if not binding: raise HTTPException(422, "invalid_binding")
     return {"workspace_key": workspace.storage_key, "model_id": profile.model_id, "thinking_level": profile.thinking_level, "provider_id": binding.provider_id, "api_key": decrypt(binding.ciphertext, binding.nonce, f"{user_id}:{binding.id}:{binding.provider_id}".encode()), "session_file_key": session.pi_session_file_key}
@@ -168,7 +169,10 @@ async def consume_run(run_id: UUID, session_id: UUID, user_id: UUID, content: st
 @router.post("", status_code=201)
 async def create_session(body: SessionInput, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     profile = await db.scalar(select(AgentProfile).where(AgentProfile.id == body.profile_id, AgentProfile.user_id == user.id))
-    workspace = await db.scalar(select(Workspace).where(Workspace.id == body.workspace_id, Workspace.user_id == user.id))
+    if body.workspace_id is None:
+        workspace = await current_workspace(db, user.id)
+    else:
+        workspace = await db.scalar(select(Workspace).where(Workspace.id == body.workspace_id, Workspace.user_id == user.id, Workspace.status == "active"))
     if profile is None or workspace is None: raise HTTPException(422, "invalid_profile_or_workspace")
     session = AgentSession(user_id=user.id, profile_id=profile.id, workspace_id=workspace.id)
     db.add(session); await db.commit()
@@ -193,7 +197,11 @@ async def messages(session_id: UUID, user: User = Depends(current_user), db: Asy
 
 @router.post("/{session_id}/messages:stream")
 async def stream(session_id: UUID, body: MessageInput, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    await owned(session_id, user, db)
+    session = await owned(session_id, user, db)
+    workspace = await db.scalar(select(Workspace).where(Workspace.id == session.workspace_id, Workspace.user_id == user.id).with_for_update())
+    if workspace is None or workspace.status != "active":
+        raise HTTPException(409, "workspace_unavailable")
+    await enforce_workspace_storage_limit(user.id)
     sequence = await db.scalar(select(func.coalesce(func.max(ChatMessage.sequence), 0)).where(ChatMessage.session_id == session_id))
     run = AgentRun(session_id=session_id, user_id=user.id)
     try:

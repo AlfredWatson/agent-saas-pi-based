@@ -31,7 +31,7 @@ ID 均为 UUID。时间字段为带时区的 ISO 8601 时间。所有资源按�
 
 ## 2. 首次调用顺序
 
-注册会同时创建一个名为 `Default` 的 Workspace。创建 Provider Binding 不会请求模型；首次成功 Chat 才写入该 Binding 的 `verified_at`。
+注册会同时创建并选中名为 `default` 的 Workspace。创建 Provider Binding 不会请求模型；首次成功 Chat 才写入该 Binding 的 `verified_at`。
 
 ```text
 register/login → providers → provider-bindings → models
@@ -169,10 +169,35 @@ Binding 必须属于当前用户且是 `active`：
 ### `GET /workspaces`
 
 ```json
-{"items":[{"id":"<workspace-uuid>","name":"Default","status":"active"}]}
+{"items":[{"id":"<workspace-uuid>","name":"default","status":"active","is_current":true}]}
 ```
 
-当前公开 API 只提供工作区读取：注册时自动创建 `Default`，没有公开的工作区创建、删除或文件管理路由。
+注册时自动创建并选中 `default`。Workspace 名称同时是容器内
+`/runtime-data/workspaces/<name>/` 的目录名，必须匹配
+`^[a-z0-9][a-z0-9_-]{0,63}$`；同一用户内不得重名。
+
+### `POST /workspaces`
+
+```json
+{"name":"project-a"}
+```
+
+成功：`201 {"id":"<workspace-uuid>","name":"project-a","status":"active","is_current":false}`。
+首次实际 Chat 时才创建目录。名称非法为 `422 invalid_workspace_name`；重名、数量上限或存储上限分别为 `409 workspace_exists`、`workspace_limit_reached`、`workspace_storage_limit_reached`。
+
+### `POST /workspaces/{workspace_id}:switch`
+
+将该 Workspace 设为当前 Workspace。后续 `POST /sessions` 省略 `workspace_id` 时使用它。不可用 Workspace 返回 `409 workspace_unavailable`。
+
+### `GET /workspaces/{workspace_id}/sessions`
+
+```json
+{"session_ids":["<session-uuid>"]}
+```
+
+### `DELETE /workspaces/{workspace_id}`
+
+删除该 Workspace 的目录、关联 Pi JSONL、Session、Run 和消息记录，成功返回 `204`。`default` 不能删除；若任一关联 Session 正在运行，返回 `409 workspace_busy` 且不删除任何内容。
 
 ## 6. Runtime 生命周期
 
@@ -214,7 +239,7 @@ Binding 必须属于当前用户且是 `active`：
 {"profile_id":"<profile-uuid>","workspace_id":"<workspace-uuid>"}
 ```
 
-成功：`201 {"id":"<session-uuid>","status":"ready"}`。任一 ID 不属于当前用户时为 `422 invalid_profile_or_workspace`。
+`workspace_id` 可以省略，此时使用当前 Workspace（新用户默认为 `default`）。成功：`201 {"id":"<session-uuid>","status":"ready"}`。任一 ID 不属于当前用户时为 `422 invalid_profile_or_workspace`。
 
 ### `GET /sessions`
 

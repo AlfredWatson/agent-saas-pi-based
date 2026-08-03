@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -9,7 +9,7 @@ afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root,
 test("Faux sessions use stable tenant-agnostic data paths and Pi default coding tools", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-saas-runtime-")); roots.push(root);
 	process.env.RUNTIME_DATA_ROOT = root;
-	const { createSession, ensureRuntimeHome, InvalidSessionFileKeyError } = await import("../src/sessions/session-factory.js");
+	const { createSession, deleteWorkspaceData, ensureRuntimeHome, InvalidSessionFileKeyError } = await import("../src/sessions/session-factory.js");
 	await ensureRuntimeHome();
 	const managed = await createSession("00000000-0000-0000-0000-000000000001", { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", thinking_level: "low" });
 	expect(managed.session.agent.state.tools.map((tool) => tool.name).sort()).toEqual(["bash", "edit", "read", "write"]);
@@ -32,4 +32,11 @@ test("Faux sessions use stable tenant-agnostic data paths and Pi default coding 
 	resumed.session.dispose();
 	await expect(createSession("00000000-0000-0000-0000-000000000001", { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", session_file_key: "../outside.jsonl" })).rejects.toBeInstanceOf(InvalidSessionFileKeyError);
 	await expect(createSession("00000000-0000-0000-0000-000000000001", { workspace_key: "../outside", provider_id: "faux", api_key: "unused", model_id: "faux-1" })).rejects.toThrow("invalid_workspace_key");
+
+	await mkdir(join(root, "workspaces", "other"), { recursive: true });
+	await writeFile(join(root, "workspaces", "other", "keep.txt"), "keep");
+	await deleteWorkspaceData("workspace", [{ session_id: "session", session_file_key: managed.sessionFile }]);
+	await expect(access(join(root, "workspaces", "workspace"))).rejects.toThrow();
+	await expect(access(join(root, "sessions", managed.sessionFile))).rejects.toThrow();
+	await expect(access(join(root, "workspaces", "other", "keep.txt"))).resolves.toBeUndefined();
 });

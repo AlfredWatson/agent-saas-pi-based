@@ -33,3 +33,8 @@ demand. Runtime source is mounted read-only from `agent-runtime/src`; each
 user's workspace and Pi JSONL trajectory are mounted under
 `.runtime-data/tenants/<user-id>` at the container's fixed `/runtime-data`
 root. Each Runtime uses Pi's default `read`, `write`, `edit`, and `bash` tools.
+
+Each user starts with an active `default` Workspace at
+`/runtime-data/workspaces/default`. Additional Workspace names are safe
+lowercase directory names; Workspace count and the shared `workspaces/` soft
+storage limit are configured in `.env`.

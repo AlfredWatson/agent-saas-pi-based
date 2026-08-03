@@ -66,3 +66,26 @@ class RuntimeClient:
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.post(f"{base_url}/internal/v1/sessions/{session_id}/{action}", headers=self._headers(user_id), json={"content": content} if content else {})
             response.raise_for_status()
+
+    async def delete_workspace(self, user_id: str, workspace_key: str, sessions: list[dict]) -> None:
+        base_url = await self._base_url(user_id)
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.request(
+                    "DELETE",
+                    f"{base_url}/internal/v1/workspaces/{workspace_key}",
+                    headers=self._headers(user_id),
+                    json={"sessions": sessions},
+                )
+        except httpx.HTTPError as exc:
+            raise RuntimeUnavailableError("runtime_workspace_delete_failed") from exc
+        if response.status_code == 409:
+            raise RuntimeWorkspaceBusyError("workspace_busy")
+        try:
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RuntimeUnavailableError("runtime_workspace_delete_failed") from exc
+
+
+class RuntimeWorkspaceBusyError(RuntimeError):
+    pass

@@ -60,8 +60,12 @@ def test_second_running_run_is_reported_as_session_busy_when_flush_fails():
 
         async def scalar(self, _query):
             self.scalar_calls += 1
-            # The route first checks ownership, then reads the current sequence.
-            return SimpleNamespace(id=session_id) if self.scalar_calls == 1 else 3
+            # The route locks the Session's Workspace before it reads sequence.
+            if self.scalar_calls == 1:
+                return SimpleNamespace(id=session_id, workspace_id=workspace_id)
+            if self.scalar_calls == 2:
+                return SimpleNamespace(status="active")
+            return 3
 
         def add(self, _item) -> None:
             pass
@@ -81,6 +85,7 @@ def test_second_running_run_is_reported_as_session_busy_when_flush_fails():
         assert db.rolled_back
 
     session_id = uuid4()
+    workspace_id = uuid4()
     asyncio.run(run_test())
 
 

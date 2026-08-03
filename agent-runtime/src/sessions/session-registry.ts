@@ -8,4 +8,5 @@ export class SessionRegistry {
 	get(id: string): ManagedSession | undefined { return this.entries.get(id); }
 	set(id: string, entry: ManagedSession): void { this.entries.set(id, entry); }
 	delete(id: string): void { this.entries.get(id)?.session.dispose(); this.entries.delete(id); }
+	anyBusy(ids: Iterable<string>): boolean { return [...ids].some((id) => this.entries.get(id)?.busy); }
 }

@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import { createAgentSession, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
@@ -31,10 +31,22 @@ function sessionFilePath(sessionFileKey: string, sessions: string): string {
 }
 
 export type SessionInput = { workspace_key: string; model_id: string; thinking_level?: string; api_key: string; provider_id: string; session_file_key?: string };
+export type WorkspaceSessionFile = { session_id: string; session_file_key?: string | null };
 
 /** Make the writable HOME available before any Pi tool or subprocess needs it. */
 export async function ensureRuntimeHome(): Promise<void> {
 	await mkdir(runtimePath("home"), { recursive: true });
+}
+
+/** Delete only the supplied session trajectories and the requested workspace. */
+export async function deleteWorkspaceData(workspaceKey: string, sessions: WorkspaceSessionFile[]): Promise<void> {
+	const workspace = workspacePath(workspaceKey);
+	const sessionDir = runtimePath("sessions");
+	const sessionFiles = sessions
+		.map(({ session_file_key }) => session_file_key ? sessionFilePath(session_file_key, sessionDir) : undefined)
+		.filter((path): path is string => path !== undefined);
+	for (const sessionFile of sessionFiles) await rm(sessionFile, { force: true });
+	await rm(workspace, { recursive: true, force: true });
 }
 
 /** Runtime credentials deliberately live only in this ModelRuntime instance. */

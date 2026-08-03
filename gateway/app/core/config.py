@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -27,8 +27,17 @@ class Settings(BaseSettings):
     runtime_memory_limit: str = "1g"
     runtime_nano_cpus: int = Field(default=1_000_000_000, gt=0)
     runtime_pids_limit: int = Field(default=256, gt=0)
+    workspace_max_per_user: int | None = Field(default=None, ge=1)
+    workspace_storage_limit_mb: int = Field(default=1024, ge=1)
     jwt_issuer: str = "pi-saas"
     jwt_audience: str = "pi-saas-api"
+
+    @field_validator("workspace_max_per_user", mode="before")
+    @classmethod
+    def parse_workspace_max_per_user(cls, value):
+        if value is None or (isinstance(value, str) and value.strip().lower() == "unlimited"):
+            return None
+        return value
 
     @model_validator(mode="after")
     def validate_secrets(self):

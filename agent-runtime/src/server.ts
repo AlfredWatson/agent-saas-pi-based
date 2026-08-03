@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { config } from "./config.js";
 import { tenantFrom } from "./auth/internal-auth.js";
 import { SessionRegistry } from "./sessions/session-registry.js";
-import { createSession, ensureRuntimeHome, InvalidSessionFileKeyError, type SessionInput } from "./sessions/session-factory.js";
+import { createSession, deleteWorkspaceData, ensureRuntimeHome, InvalidSessionFileKeyError, type SessionInput, type WorkspaceSessionFile } from "./sessions/session-factory.js";
 import { projectMessageEnd, type CompletedTool } from "./sessions/event-projection.js";
 import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 
@@ -55,6 +55,23 @@ app.put<{ Params: { id: string }; Body: SessionInput }>("/internal/v1/sessions/:
 	}
 	if (managed.tenant !== tenant) return reply.code(403).send({ error: "tenant_mismatch" });
 	return { pi_session_id: managed.session.sessionId, session_file_key: managed.sessionFile };
+});
+app.delete<{ Params: { workspaceKey: string }; Body: { sessions?: WorkspaceSessionFile[] } }>("/internal/v1/workspaces/:workspaceKey", async (request, reply) => {
+	if (!authenticated(request, reply)) return;
+	const sessions = request.body?.sessions;
+	if (!Array.isArray(sessions) || sessions.some((entry) => typeof entry?.session_id !== "string" || (entry.session_file_key !== undefined && entry.session_file_key !== null && typeof entry.session_file_key !== "string"))) {
+		return reply.code(422).send({ error: "invalid_workspace_delete_request" });
+	}
+	const sessionIds = sessions.map((entry) => entry.session_id);
+	if (registry.anyBusy(sessionIds)) return reply.code(409).send({ error: "workspace_busy" });
+	try {
+		await deleteWorkspaceData(request.params.workspaceKey, sessions);
+	} catch (error) {
+		if (error instanceof InvalidSessionFileKeyError || (error instanceof Error && error.message === "invalid_workspace_key")) return reply.code(422).send({ error: "invalid_workspace_delete_request" });
+		throw error;
+	}
+	for (const sessionId of sessionIds) registry.delete(sessionId);
+	return reply.code(204).send();
 });
 app.post<{ Params: { id: string }; Body: { content: string } }>("/internal/v1/sessions/:id/chat", async (request, reply) => {
 	const tenant = authenticated(request, reply); if (!tenant) return;

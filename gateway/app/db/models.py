@@ -26,11 +26,16 @@ class User(Timestamped, Base):
 
 class Workspace(Timestamped, Base):
     __tablename__ = "workspaces"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_workspaces_user_name"),
+        UniqueConstraint("user_id", "storage_key", name="uq_workspaces_user_storage_key"),
+    )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(128))
-    storage_key: Mapped[str] = mapped_column(String(64), unique=True)
+    storage_key: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32), default="active")
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
 
 
 class ProviderBinding(Timestamped, Base):
@@ -101,6 +106,7 @@ class AgentRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 Index("uq_agent_runs_one_running_session", AgentRun.session_id, unique=True, postgresql_where=text("status = 'running'"))
+Index("uq_workspaces_one_current", Workspace.user_id, unique=True, postgresql_where=text("is_current"))
 
 
 class RuntimeInstance(Timestamped, Base):

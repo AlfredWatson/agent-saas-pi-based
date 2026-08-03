@@ -63,6 +63,8 @@ cp .env.example .env
 | `ENCRYPTION_KEY` | Provider 密钥 AEAD 加密 | 32 字节 URL-safe Base64 密钥 |
 | `RUNTIME_SHARED_SECRET` | Gateway ↔ Runtime 内部 Bearer | 与 JWT/Provider 密钥均不同的高熵值 |
 | `POSTGRES_PASSWORD` | PostgreSQL 密码 | 非空且由密钥系统托管 |
+| `WORKSPACE_MAX_PER_USER` | 每用户 Workspace 数量上限 | `unlimited` 或不小于 1 的整数；包含 `default` |
+| `WORKSPACE_STORAGE_LIMIT_MB` | 每用户所有 workspace 文件软上限 | 默认 1024 MB；达到上限后拒绝后续创建和 Chat |
 | `POSTGRES_HOST/PORT/USER/DATABASE` | Gateway 数据库连接 | 默认是 `localhost:5432`，须按目标环境调整 |
 | `RUNTIME_DOCKER_IMAGE` | Runtime 镜像 | 必须已导入目标 Docker daemon |
 | `RUNTIME_DOCKER_NETWORK` | Runtime bridge 网络 | Gateway 有权限创建和使用 |
