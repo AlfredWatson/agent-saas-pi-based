@@ -31,5 +31,5 @@ extensions and a browser UI are intentionally out of scope for this phase.
 Runtime is Docker-only: Gateway creates one loopback-only container per user on
 demand. Runtime source is mounted read-only from `agent-runtime/src`; each
 user's workspace and Pi JSONL trajectory are mounted under
-`.runtime-data/tenants/<user-id>`. Each Runtime uses Pi's default `read`,
-`write`, `edit`, and `bash` tools.
+`.runtime-data/tenants/<user-id>` at the container's fixed `/runtime-data`
+root. Each Runtime uses Pi's default `read`, `write`, `edit`, and `bash` tools.

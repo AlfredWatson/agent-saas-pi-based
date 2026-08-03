@@ -33,7 +33,7 @@
                               ├── 127.0.0.1:<动态端口> → :3000
                               ├── agent-runtime/src → /opt/pi-runtime/src:ro
                               └── .runtime-data/tenants/<user>
-                                     → /runtime-data/tenants/<user>:rw
+                                     → /runtime-data:rw
                                             │
                                             └── 外部 LLM Provider API
 ```
@@ -149,7 +149,7 @@ SMOKE_PROVIDER=faux uv run python scripts/smoke_flow.py
 
 - `3000/tcp` 仅发布为 `127.0.0.1:<随机端口>`，不对局域网或互联网公开。
 - `agent-runtime/src` 以只读方式挂到 `/opt/pi-runtime/src`。
-- `.runtime-data/tenants/<user-id>` 以读写方式挂到同名容器租户路径，存放 workspace、Pi agent 数据与 JSONL。
+- `.runtime-data/tenants/<user-id>` 以读写方式挂到容器固定的 `/runtime-data`，存放 workspace、Pi agent 数据与 JSONL。
 - 根文件系统只读；`/tmp` 是 256 MiB、`nosuid,nodev` 的 tmpfs。
 - 丢弃所有 Linux capabilities、设置 `no-new-privileges`、使用 Gateway 宿主 UID/GID；默认限制为 1 GiB 内存、1 CPU、256 PIDs。
 - 添加 `com.pi-saas.managed=true` 与租户 ID Docker 标签，同一用户只存在一个 `runtime_instances` 记录。
@@ -196,4 +196,3 @@ SMOKE_PROVIDER=faux uv run python scripts/smoke_flow.py
 | TLS、反向代理、备份恢复、告警 | 仓库未提供生产编排/监控配置 | 目标环境补齐 |
 
 建议将以下全部作为正式上线门禁：Faux smoke 通过、镜像架构匹配、迁移成功、Runtime 生命周期、SSE 断线持续执行、备份恢复演练、TLS/反向代理和密钥轮换。完成后，应将本报告的“待现场验收”替换为带日期、环境和证据的实测结论。
-

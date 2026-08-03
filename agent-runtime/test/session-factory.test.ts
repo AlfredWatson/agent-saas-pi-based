@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -6,10 +6,11 @@ import { afterEach, expect, test } from "vitest";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
-test("Faux session uses the explicit model and Pi default coding tools", async () => {
+test("Faux sessions use stable tenant-agnostic data paths and Pi default coding tools", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-saas-runtime-")); roots.push(root);
 	process.env.RUNTIME_DATA_ROOT = root;
-	const { createSession } = await import("../src/sessions/session-factory.js");
+	const { createSession, ensureRuntimeHome, InvalidSessionFileKeyError } = await import("../src/sessions/session-factory.js");
+	await ensureRuntimeHome();
 	const managed = await createSession("00000000-0000-0000-0000-000000000001", { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", thinking_level: "low" });
 	expect(managed.session.agent.state.tools.map((tool) => tool.name).sort()).toEqual(["bash", "edit", "read", "write"]);
 	const events: string[] = [];
@@ -18,4 +19,17 @@ test("Faux session uses the explicit model and Pi default coding tools", async (
 	stop(); managed.session.dispose();
 	expect(events).toContain("agent_settled");
 	expect(events).toContain("message_update");
+	expect(managed.sessionFile).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/);
+	expect(managed.sessionFile).not.toContain("/");
+	await expect(access(join(root, "agent"))).resolves.toBeUndefined();
+	await expect(access(join(root, "home"))).resolves.toBeUndefined();
+	await expect(access(join(root, "sessions", managed.sessionFile))).resolves.toBeUndefined();
+	await expect(access(join(root, "workspaces", "workspace"))).resolves.toBeUndefined();
+	await expect(access(join(root, "tenants", "00000000-0000-0000-0000-000000000001"))).rejects.toThrow();
+
+	const resumed = await createSession("00000000-0000-0000-0000-000000000001", { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", session_file_key: managed.sessionFile });
+	expect(resumed.sessionFile).toBe(managed.sessionFile);
+	resumed.session.dispose();
+	await expect(createSession("00000000-0000-0000-0000-000000000001", { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", session_file_key: "../outside.jsonl" })).rejects.toBeInstanceOf(InvalidSessionFileKeyError);
+	await expect(createSession("00000000-0000-0000-0000-000000000001", { workspace_key: "../outside", provider_id: "faux", api_key: "unused", model_id: "faux-1" })).rejects.toThrow("invalid_workspace_key");
 });

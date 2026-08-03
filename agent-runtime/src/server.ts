@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { config } from "./config.js";
 import { tenantFrom } from "./auth/internal-auth.js";
 import { SessionRegistry } from "./sessions/session-registry.js";
-import { createSession, type SessionInput } from "./sessions/session-factory.js";
+import { createSession, ensureRuntimeHome, InvalidSessionFileKeyError, type SessionInput } from "./sessions/session-factory.js";
 import { projectMessageEnd, type CompletedTool } from "./sessions/event-projection.js";
 import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 
@@ -44,7 +44,15 @@ app.get<{ Querystring: { provider_id?: string }; }>("/internal/v1/models", async
 app.put<{ Params: { id: string }; Body: SessionInput }>("/internal/v1/sessions/:id", async (request, reply) => {
 	const tenant = authenticated(request, reply); if (!tenant) return;
 	let managed = registry.get(request.params.id);
-	if (!managed) { managed = await createSession(tenant, request.body); registry.set(request.params.id, managed); }
+	if (!managed) {
+		try {
+			managed = await createSession(tenant, request.body);
+		} catch (error) {
+			if (error instanceof InvalidSessionFileKeyError) return reply.code(422).send({ error: "invalid_session_file_key" });
+			throw error;
+		}
+		registry.set(request.params.id, managed);
+	}
 	if (managed.tenant !== tenant) return reply.code(403).send({ error: "tenant_mismatch" });
 	return { pi_session_id: managed.session.sessionId, session_file_key: managed.sessionFile };
 });
@@ -88,4 +96,5 @@ for (const action of ["abort", "steer", "follow-up"] as const) app.post<{ Params
 	if (action === "abort") await managed.session.abort(); else if (!managed.busy) return reply.code(409).send({ error: "session_not_running" }); else if (action === "steer") await managed.session.steer(request.body.content ?? ""); else await managed.session.followUp(request.body.content ?? "");
 	return { status: "accepted" };
 });
+await ensureRuntimeHome();
 await app.listen({ host: config.host, port: config.port });

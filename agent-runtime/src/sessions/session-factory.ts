@@ -1,25 +1,47 @@
 import { mkdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { createAgentSession, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { config } from "../config.js";
 import { createPayloadRedactor } from "./event-projection.js";
 import type { ManagedSession } from "./session-registry.js";
 
-function tenantPath(tenant: string, part: string): string {
-	const path = resolve(config.dataRoot, "tenants", tenant, part);
-	const root = resolve(config.dataRoot, "tenants", tenant);
-	if (!path.startsWith(`${root}/`)) throw new Error("unsafe path");
+const SAFE_PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const SAFE_SESSION_FILE_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/;
+
+export class InvalidSessionFileKeyError extends Error {
+	constructor() { super("invalid_session_file_key"); }
+}
+
+function runtimePath(...parts: string[]): string {
+	const root = resolve(config.dataRoot);
+	const path = resolve(root, ...parts);
+	if (path !== root && !path.startsWith(`${root}/`)) throw new Error("unsafe path");
 	return path;
+}
+
+function workspacePath(workspaceKey: string): string {
+	if (!SAFE_PATH_SEGMENT.test(workspaceKey)) throw new Error("invalid_workspace_key");
+	return runtimePath("workspaces", workspaceKey);
+}
+
+function sessionFilePath(sessionFileKey: string, sessions: string): string {
+	if (!SAFE_SESSION_FILE_KEY.test(sessionFileKey)) throw new InvalidSessionFileKeyError();
+	return resolve(sessions, sessionFileKey);
 }
 
 export type SessionInput = { workspace_key: string; model_id: string; thinking_level?: string; api_key: string; provider_id: string; session_file_key?: string };
 
+/** Make the writable HOME available before any Pi tool or subprocess needs it. */
+export async function ensureRuntimeHome(): Promise<void> {
+	await mkdir(runtimePath("home"), { recursive: true });
+}
+
 /** Runtime credentials deliberately live only in this ModelRuntime instance. */
 export async function createSession(tenant: string, input: SessionInput): Promise<ManagedSession> {
-	const workspace = tenantPath(tenant, join("workspaces", input.workspace_key));
-	const sessions = tenantPath(tenant, "sessions");
-	const agentDir = tenantPath(tenant, "agent");
+	const workspace = workspacePath(input.workspace_key);
+	const sessions = runtimePath("sessions");
+	const agentDir = runtimePath("agent");
 	await Promise.all([mkdir(workspace, { recursive: true }), mkdir(sessions, { recursive: true }), mkdir(agentDir, { recursive: true })]);
 	const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null });
 	if (input.provider_id === "faux") {
@@ -30,7 +52,7 @@ export async function createSession(tenant: string, input: SessionInput): Promis
 	const model = modelRuntime.getModel(input.provider_id, input.model_id);
 	if (!model) throw new Error("invalid_model");
 	const manager = input.session_file_key
-		? SessionManager.open(input.session_file_key, sessions, workspace)
+		? SessionManager.open(sessionFilePath(input.session_file_key, sessions), sessions, workspace)
 		: SessionManager.create(workspace, sessions);
 	const { session } = await createAgentSession({
 		cwd: workspace,
@@ -40,5 +62,7 @@ export async function createSession(tenant: string, input: SessionInput): Promis
 		model,
 		thinkingLevel: input.thinking_level as never,
 	});
-	return { tenant, session, busy: false, sessionFile: session.sessionFile, redactor: createPayloadRedactor([config.sharedSecret, input.api_key]) };
+	const sessionFile = session.sessionFile ? basename(session.sessionFile) : undefined;
+	if (!sessionFile || !SAFE_SESSION_FILE_KEY.test(sessionFile)) throw new Error("session_file_missing");
+	return { tenant, session, busy: false, sessionFile, redactor: createPayloadRedactor([config.sharedSecret, input.api_key]) };
 }

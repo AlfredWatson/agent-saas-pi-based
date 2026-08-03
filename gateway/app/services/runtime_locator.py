@@ -148,7 +148,10 @@ class DockerRuntimeLocator(RuntimeLocator):
     def _create_container(self, user_id: UUID):
         tenant_dir = self.settings.resolved_runtime_data_host_root / "tenants" / str(user_id)
         tenant_dir.mkdir(parents=True, exist_ok=True)
-        container_path = f"/runtime-data/tenants/{user_id}"
+        # A Runtime container receives exactly one tenant directory.  Keep its
+        # in-container layout tenant-agnostic so Pi and shell tools only need
+        # stable paths below this data root.
+        container_path = "/runtime-data"
         return self.client.containers.run(
             self.settings.runtime_docker_image,
             name=self._container_name(user_id),
@@ -158,8 +161,6 @@ class DockerRuntimeLocator(RuntimeLocator):
             environment={
                 "TENANT_ID": str(user_id),
                 "RUNTIME_SHARED_SECRET": self.settings.runtime_shared_secret,
-                "PI_CODING_AGENT_DIR": f"{container_path}/agent",
-                "HOME": f"{container_path}/home",
             },
             volumes={
                 str(self.settings.resolved_runtime_source_dir): {"bind": "/opt/pi-runtime/src", "mode": "ro"},

@@ -16,7 +16,8 @@ RUN chmod -R a+rX /opt/pi-runtime
 ENV NODE_ENV=production \
     RUNTIME_HOST=0.0.0.0 \
     RUNTIME_PORT=3000 \
-    RUNTIME_DATA_ROOT=/runtime-data
+    RUNTIME_DATA_ROOT=/runtime-data \
+    HOME=/runtime-data/home
 EXPOSE 3000
 HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=5 \
   CMD curl --fail --silent --show-error \

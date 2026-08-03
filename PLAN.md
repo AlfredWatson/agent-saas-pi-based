@@ -225,11 +225,11 @@ Runtime 提供仅供 Gateway 调用的内部 API：
 
 ```text
 RUNTIME_DATA_ROOT/
-└── tenants/{tenant_uuid}/
-    ├── agent/
-    ├── workspaces/{workspace_key}/
-    ├── sessions/
-    └── skills/{skill_version_id}/
+├── agent/
+├── home/
+├── workspaces/{workspace_key}/
+├── sessions/
+└── skills/{skill_version_id}/
 ```
 
 每个活动 Session 使用独立 `AgentSession`，由 `SessionRegistry` 管理：
