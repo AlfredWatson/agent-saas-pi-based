@@ -196,9 +196,14 @@ async def stream(session_id: UUID, body: MessageInput, user: User = Depends(curr
     await owned(session_id, user, db)
     sequence = await db.scalar(select(func.coalesce(func.max(ChatMessage.sequence), 0)).where(ChatMessage.session_id == session_id))
     run = AgentRun(session_id=session_id, user_id=user.id)
-    db.add(run); await db.flush()
-    db.add(ChatMessage(session_id=session_id, run_id=run.id, role="user", sequence=sequence + 1, content=body.content))
-    try: await db.commit()
+    try:
+        # PostgreSQL checks the partial unique index during flush, not only at
+        # commit.  Keep both operations in this boundary so a concurrent or
+        # detached previous run is reported as an expected session conflict.
+        db.add(run)
+        await db.flush()
+        db.add(ChatMessage(session_id=session_id, run_id=run.id, role="user", sequence=sequence + 1, content=body.content))
+        await db.commit()
     except IntegrityError as exc:
         await db.rollback(); raise HTTPException(409, "session_busy") from exc
     queue: asyncio.Queue[tuple[str, dict]] = asyncio.Queue()

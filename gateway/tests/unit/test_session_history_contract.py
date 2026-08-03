@@ -4,8 +4,9 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 
-from app.api.v1.sessions import owned, project_message_end, public_tool_event
+from app.api.v1.sessions import MessageInput, owned, project_message_end, public_tool_event, stream
 
 
 class CapturingSession:
@@ -49,6 +50,38 @@ def test_foreign_session_is_not_visible_as_a_distinct_error():
         assert error.value.status_code == 404
 
     asyncio.run(run())
+
+
+def test_second_running_run_is_reported_as_session_busy_when_flush_fails():
+    class BusySession:
+        def __init__(self) -> None:
+            self.scalar_calls = 0
+            self.rolled_back = False
+
+        async def scalar(self, _query):
+            self.scalar_calls += 1
+            # The route first checks ownership, then reads the current sequence.
+            return SimpleNamespace(id=session_id) if self.scalar_calls == 1 else 3
+
+        def add(self, _item) -> None:
+            pass
+
+        async def flush(self) -> None:
+            raise IntegrityError("insert", {}, Exception("duplicate running session"))
+
+        async def rollback(self) -> None:
+            self.rolled_back = True
+
+    async def run_test() -> None:
+        db = BusySession()
+        with pytest.raises(HTTPException) as error:
+            await stream(session_id, MessageInput(content="next message"), SimpleNamespace(id=uuid4()), db)
+        assert error.value.status_code == 409
+        assert error.value.detail == "session_busy"
+        assert db.rolled_back
+
+    session_id = uuid4()
+    asyncio.run(run_test())
 
 
 def test_public_sse_tool_names_remain_compatible_and_payloads_are_safe():

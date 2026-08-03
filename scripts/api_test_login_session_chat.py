@@ -63,7 +63,17 @@ def show_history(client: httpx.Client, headers: dict[str, str], session_id: str)
 def stream_task(client: httpx.Client, headers: dict[str, str], session_id: str, task: str) -> None:
     print("\n[智能体流式返回]")
     done = False
-    with client.stream("POST", f"{BASE_URL}/api/v1/sessions/{session_id}/messages:stream", headers=headers, json={"content": task}) as response:
+    # A long agent turn can legitimately be quiet while a tool runs.  The
+    # Gateway deliberately keeps that turn alive after an SSE subscriber
+    # disconnects, so a client-side read timeout would leave the session busy
+    # and make a later message conflict with it.  Keep normal request limits,
+    # but wait indefinitely for stream events.
+    stream_timeout = httpx.Timeout(connect=10.0, read=None, write=60.0, pool=60.0)
+    with client.stream("POST", f"{BASE_URL}/api/v1/sessions/{session_id}/messages:stream", headers=headers, json={"content": task}, timeout=stream_timeout) as response:
+        if response.status_code == 409:
+            detail = response.json().get("detail", "session_busy")
+            if detail == "session_busy":
+                raise RuntimeError("该 Session 仍在后台执行上一条任务；请等待其结束，或先调用 POST /api/v1/sessions/{session_id}/abort 后再继续对话。")
         response.raise_for_status()
         event_name: str | None = None
         for line in response.iter_lines():
