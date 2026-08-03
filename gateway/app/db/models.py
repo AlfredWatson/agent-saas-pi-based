@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, LargeBinary, String, Text, UniqueConstraint, func, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, LargeBinary, String, Text, UniqueConstraint, func, text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy import MetaData
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -72,6 +72,7 @@ class AgentSession(Timestamped, Base):
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
+    __table_args__ = (UniqueConstraint("session_id", "sequence", name="uq_chat_messages_session_sequence"),)
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agent_sessions.id"), index=True)
     run_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("agent_runs.id"), nullable=True, index=True)
@@ -79,6 +80,12 @@ class ChatMessage(Base):
     sequence: Mapped[int] = mapped_column()
     content: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), default="completed")
+    tool_call_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    tool_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    arguments: Mapped[object | None] = mapped_column(JSONB, nullable=True)
+    result: Mapped[object | None] = mapped_column(JSONB, nullable=True)
+    is_error: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    payload_truncated: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

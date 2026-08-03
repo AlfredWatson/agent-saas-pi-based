@@ -128,8 +128,10 @@ FastAPI lifespan 启动顺序：
   - Session、用户消息、状态、idempotency key、开始/结束时间、错误和 token usage。
   - 部分唯一索引保证每个 Session 最多一个 `running` run。
 - `chat_messages`
-  - Session、run、角色、输入模式、顺序号、文本内容、状态和时间戳。
-  - PostgreSQL 只保存用户消息和面向用户的助手最终文本投影，不保存逐个流式 delta、thinking 或完整工具结果。
+  - Session、run、角色、顺序号、非空文本内容、状态和时间戳；`session_id + sequence` 唯一递增。
+  - 保存 `user`、`assistant`、`tool_call`、`tool_result` 投影。工具行有 `tool_call_id`、`tool_name`、JSONB `arguments`/`result`、`is_error` 与 `payload_truncated`。
+  - 仅在 Pi `message_end` 时按 Pi 消息顺序落库，绝不保存逐个 delta、thinking 或 tool update；实时工具完成可乱序，历史不受其影响。
+  - 参数/结果在 Runtime 和 Gateway 双重递归脱敏（Provider Key、Runtime shared secret 及常见敏感字段），单载荷上限 256 KiB；超限仅留安全预览和原字节数。
 
 所有 repository 查询必须同时包含 `user_id` 所有权条件。本阶段不启用 PostgreSQL RLS。
 
@@ -202,7 +204,7 @@ SSE 对外事件固定为：
 - `message.failed`
 - `done`
 
-不向外暴露 thinking delta。收到 Pi `agent_settled` 后才发送 `done`，不能以 `agent_end` 作为终态。
+不向外暴露 thinking delta。收到 Pi `agent_settled` 后才发送 `done`，不能以 `agent_end` 作为终态。`tool.started` 保持事件名并提供 `toolCallId`、`toolName`、`args`；`tool.completed` 提供相同关联、`result`、`isError`。保留 `tool` 别名兼容旧消费者。二者的载荷经过相同脱敏/截断，且不公开 tool update。
 
 ## 5. Agent Runtime
 
@@ -236,7 +238,7 @@ RUNTIME_DATA_ROOT/
 - `SessionManager.create/open()` 持久化 Pi JSONL。
 - Profile 的 Skill 版本在创建 Session 时同步并冻结。
 - 同一 Session 的互斥在 Runtime 再次检查，避免绕过 Gateway。
-- Runtime 输出原始但有版本号的 NDJSON Agent 事件；Gateway 负责映射成公开 SSE。
+- Runtime 输出安全的 NDJSON Agent 事件；除文本 delta、工具开始/完成、`message_end` 投影和 `agent_settled` 外不透传 Pi 轨迹。Gateway 负责映射公开 SSE，并仅使用 `message_end` 持久化历史。
 - Runtime 不接受任意文件系统路径、任意 Extension、MCP 配置或 npm 安装命令。
 
 ## 6. 测试与验收
@@ -253,8 +255,8 @@ RUNTIME_DATA_ROOT/
 - 无效 Provider、无效模型、失效 binding 和 Runtime 不可用的错误映射。
 - Skill ZIP 路径穿越、软链接、超限、缺少 SKILL.md、重复版本及校验和。
 - Session 活动唯一约束、普通 Chat 409、abort/steer/follow-up 状态。
-- SSE 断开后后台任务继续，最终消息仍写入 PostgreSQL。
-- Runtime 超时、流中断、错误事件和 `agent_settled` 终态。
+- SSE 断开后后台任务继续；每个已完成的 `message_end` 投影立即写入 PostgreSQL，后续 run 失败仍保留。
+- Runtime 超时、流中断、错误事件和 `agent_settled` 终态；工具调用/结果、关联、错误、脱敏/截断、Pi 顺序投影和跨用户 404。
 
 ### Agent Runtime
 
@@ -277,8 +279,8 @@ RUNTIME_DATA_ROOT/
 3. 获取模型并创建 Agent Profile。
 4. 上传测试 Skill 并绑定 Profile。
 5. 创建 Session。
-6. 发起 Chat，验证 SSE delta 和 `done`。
-7. 查询 PostgreSQL 消息历史。
+6. 发起 Chat，验证 SSE delta、兼容工具事件的扩展载荷和 `done`。
+7. 查询 PostgreSQL 完整有序消息历史（含工具结构化字段）。
 8. 模拟 SSE 断线，确认后台完成。
 9. 重启 Runtime，确认 Session 可以恢复并继续 Chat。
 10. 使用第二用户验证资源隔离。

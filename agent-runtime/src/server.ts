@@ -4,6 +4,7 @@ import { config } from "./config.js";
 import { tenantFrom } from "./auth/internal-auth.js";
 import { SessionRegistry } from "./sessions/session-registry.js";
 import { createSession, type SessionInput } from "./sessions/session-factory.js";
+import { projectMessageEnd, type CompletedTool } from "./sessions/event-projection.js";
 import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 
 const app = Fastify({ logger: true });
@@ -52,10 +53,24 @@ app.post<{ Params: { id: string }; Body: { content: string } }>("/internal/v1/se
 	const managed = registry.get(request.params.id); if (!managed || managed.tenant !== tenant) return reply.code(404).send({ error: "session_not_found" });
 	if (managed.busy) return reply.code(409).send({ error: "session_busy" });
 	managed.busy = true; reply.header("content-type", "application/x-ndjson");
-	const events: string[] = []; const unsubscribe = managed.session.subscribe((event) => {
+	const events: string[] = [];
+	const completedTools = new Map<string, CompletedTool>();
+	const enqueue = (event: Record<string, unknown>) => events.push(JSON.stringify(event));
+	const unsubscribe = managed.session.subscribe((event) => {
 		if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") events.push(JSON.stringify({ type: "text_delta", delta: event.assistantMessageEvent.delta }));
-		if (event.type === "tool_execution_start") events.push(JSON.stringify({ type: "tool_started", tool: event.toolName }));
-		if (event.type === "tool_execution_end") events.push(JSON.stringify({ type: "tool_completed", tool: event.toolName }));
+		if (event.type === "tool_execution_start") {
+			const args = managed.redactor.payload(event.args);
+			enqueue({ type: "tool_started", toolCallId: event.toolCallId, toolName: event.toolName, args: args.value, payload_truncated: args.payloadTruncated });
+		}
+		if (event.type === "tool_execution_end") {
+			const result = managed.redactor.payload(event.result);
+			completedTools.set(event.toolCallId, { toolCallId: event.toolCallId, toolName: event.toolName, result: result.value, isError: event.isError, payloadTruncated: result.payloadTruncated });
+			enqueue({ type: "tool_completed", toolCallId: event.toolCallId, toolName: event.toolName, result: result.value, isError: event.isError, payload_truncated: result.payloadTruncated });
+		}
+		if (event.type === "message_end") {
+			const projected = projectMessageEnd(event.message, completedTools, managed.redactor);
+			if (projected) enqueue(projected);
+		}
 		if (event.type === "agent_settled") events.push(JSON.stringify({ type: "agent_settled" }));
 	});
 	void managed.session.prompt(request.body.content).catch((error: unknown) => events.push(JSON.stringify({ type: "error", error: "agent_failed" }))).finally(() => { managed.busy = false; unsubscribe(); });

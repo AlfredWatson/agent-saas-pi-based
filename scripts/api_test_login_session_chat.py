@@ -48,6 +48,18 @@ def create_session(client: httpx.Client, headers: dict[str, str]) -> dict:
     return session
 
 
+def show_history(client: httpx.Client, headers: dict[str, str], session_id: str) -> None:
+    items = show("所选 Session 历史", client.get(f"{BASE_URL}/api/v1/sessions/{session_id}/messages", headers=headers))["items"]
+    if not items:
+        print("（暂无消息）")
+        return
+    for item in items:
+        suffix = ""
+        if item["role"] in {"tool_call", "tool_result"}:
+            suffix = f" call={item.get('tool_call_id')} tool={item.get('tool_name')} error={item.get('is_error')}"
+        print(f"#{item['sequence']} {item['role']}{suffix}: {item['content']}")
+
+
 def stream_task(client: httpx.Client, headers: dict[str, str], session_id: str, task: str) -> None:
     print("\n[智能体流式返回]")
     done = False
@@ -62,7 +74,8 @@ def stream_task(client: httpx.Client, headers: dict[str, str], session_id: str, 
                 if event_name == "assistant.delta":
                     print(payload.get("delta", ""), end="", flush=True)
                 elif event_name in {"tool.started", "tool.completed"}:
-                    print(f"\n[{event_name}: {payload.get('tool', 'unknown')}]", flush=True)
+                    fields = {key: payload.get(key) for key in ("toolCallId", "toolName", "args", "result", "isError", "payload_truncated") if key in payload}
+                    print(f"\n[{event_name}] {json.dumps(fields, ensure_ascii=False)}", flush=True)
                 elif event_name == "message.failed":
                     raise RuntimeError(f"聊天失败: {payload}")
                 elif event_name == "done":
@@ -83,10 +96,12 @@ def main() -> None:
         session = select_session(show("历史 Sessions", client.get(f"{BASE_URL}/api/v1/sessions", headers=headers))["items"])
         if session is None:
             session = create_session(client, headers)
+        show_history(client, headers, session["id"])
         task = input("\n用户任务指令: ").strip()
         if not task:
             raise SystemExit("任务指令不能为空")
         stream_task(client, headers, session["id"], task)
+        show_history(client, headers, session["id"])
         print(f"\n流程结束。Session ID: {session['id']}")
 
 

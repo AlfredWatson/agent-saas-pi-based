@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { createAgentSession, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { config } from "../config.js";
+import { createPayloadRedactor } from "./event-projection.js";
 import type { ManagedSession } from "./session-registry.js";
 
 function tenantPath(tenant: string, part: string): string {
@@ -39,5 +40,5 @@ export async function createSession(tenant: string, input: SessionInput): Promis
 		model,
 		thinkingLevel: input.thinking_level as never,
 	});
-	return { tenant, session, busy: false, sessionFile: session.sessionFile };
+	return { tenant, session, busy: false, sessionFile: session.sessionFile, redactor: createPayloadRedactor([config.sharedSecret, input.api_key]) };
 }

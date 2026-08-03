@@ -1,6 +1,7 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { PayloadRedactor } from "./event-projection.js";
 
-export type ManagedSession = { tenant: string; session: AgentSession; busy: boolean; sessionFile: string | undefined };
+export type ManagedSession = { tenant: string; session: AgentSession; busy: boolean; sessionFile: string | undefined; redactor: PayloadRedactor };
 
 export class SessionRegistry {
 	private readonly entries = new Map<string, ManagedSession>();

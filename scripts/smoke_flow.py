@@ -30,7 +30,11 @@ with httpx.Client(timeout=30, trust_env=False) as client:
     assert "event: assistant.delta" in events and events[-1] == "event: done", events
     assert all(item in {"event: message.accepted", "event: assistant.delta", "event: tool.started", "event: tool.completed", "event: message.completed", "event: done"} for item in events), events
     history = client.get(f"{base}/api/v1/sessions/{session_id}/messages", headers=headers); history.raise_for_status()
-    assert [item["role"] for item in history.json()["items"]] == ["user", "assistant"]
+    items = history.json()["items"]
+    assert [item["role"] for item in items] == ["user", "assistant"]
+    required_history_fields = {"id", "run_id", "role", "content", "sequence", "status", "created_at", "tool_call_id", "tool_name", "arguments", "result", "is_error", "payload_truncated"}
+    assert required_history_fields <= items[0].keys(), items
+    assert [item["sequence"] for item in items] == sorted(item["sequence"] for item in items)
     # Closing the subscriber must not abort the run.  The Gateway consumer remains alive.
     with client.stream("POST", f"{base}/api/v1/sessions/{session_id}/messages:stream", headers=headers, json={"content": "Say OK."}) as detached:
         detached.raise_for_status(); next(detached.iter_lines())
@@ -44,4 +48,4 @@ with httpx.Client(timeout=30, trust_env=False) as client:
         subprocess.run(restart, shell=True, check=True)
         with client.stream("POST", f"{base}/api/v1/sessions/{session_id}/messages:stream", headers=headers, json={"content": "Say OK after recovery."}) as resumed:
             resumed.raise_for_status(); assert "event: done" in [line for line in resumed.iter_lines() if line.startswith("event: ")]
-print("PASS: binding, catalog, profile, pure-delta SSE, disconnect persistence, and optional runtime recovery")
+print("PASS: binding, catalog, profile, SSE compatibility, ordered history schema, disconnect persistence, and optional runtime recovery")
