@@ -161,6 +161,8 @@ class DockerRuntimeLocator(RuntimeLocator):
             environment={
                 "TENANT_ID": str(user_id),
                 "RUNTIME_SHARED_SECRET": self.settings.runtime_shared_secret,
+                "WORKSPACE_STORAGE_LIMIT_MB": str(self.settings.workspace_storage_limit_mb),
+                "WORKSPACE_FILE_MAX_MB": str(self.settings.workspace_file_max_mb),
             },
             volumes={
                 str(self.settings.resolved_runtime_source_dir): {"bind": "/opt/pi-runtime/src", "mode": "ro"},

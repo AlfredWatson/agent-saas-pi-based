@@ -37,4 +37,6 @@ root. Each Runtime uses Pi's default `read`, `write`, `edit`, and `bash` tools.
 Each user starts with an active `default` Workspace at
 `/runtime-data/workspaces/default`. Additional Workspace names are safe
 lowercase directory names; Workspace count and the shared `workspaces/` soft
-storage limit are configured in `.env`.
+storage limit are configured in `.env`. The public Workspace API can recursively
+list files, upload one multipart file to a relative path, and delete one file;
+uploads have an independently configured hard per-file limit.

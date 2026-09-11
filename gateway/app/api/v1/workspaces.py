@@ -2,13 +2,13 @@ import asyncio
 import re
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...api.dependencies import current_user
-from ...clients.agent_runtime import RuntimeClient, RuntimeWorkspaceBusyError
+from ...clients.agent_runtime import RuntimeClient, RuntimeWorkspaceBusyError, RuntimeWorkspaceFileError
 from ...core.config import get_settings
 from ...db.models import AgentRun, AgentSession, ChatMessage, User, Workspace
 from ...db.session import get_db
@@ -58,6 +58,25 @@ async def enforce_workspace_storage_limit(user_id: UUID) -> None:
         raise HTTPException(409, "workspace_storage_limit_reached")
 
 
+async def file_mutation_workspace(db: AsyncSession, workspace_id: UUID, user_id: UUID) -> Workspace:
+    # The user lock serializes aggregate-quota mutations across Workspaces.  The
+    # Workspace lock is also taken by Chat before it creates an AgentRun, so a
+    # Run cannot begin between the busy check and the Runtime file operation.
+    await db.scalar(select(User).where(User.id == user_id).with_for_update())
+    workspace = await owned_workspace(db, workspace_id, user_id, lock=True)
+    if workspace.status != "active":
+        raise HTTPException(409, "workspace_unavailable")
+    running = await db.scalar(
+        select(AgentRun.id)
+        .join(AgentSession, AgentSession.id == AgentRun.session_id)
+        .where(AgentSession.workspace_id == workspace.id, AgentRun.status == "running")
+        .limit(1)
+    )
+    if running is not None:
+        raise HTTPException(409, "workspace_busy")
+    return workspace
+
+
 @router.post("", status_code=201)
 async def create_workspace(body: WorkspaceInput, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     if not WORKSPACE_NAME.fullmatch(body.name):
@@ -98,6 +117,69 @@ async def list_workspace_sessions(workspace_id: UUID, user: User = Depends(curre
     await owned_workspace(db, workspace_id, user.id)
     rows = (await db.scalars(select(AgentSession.id).where(AgentSession.workspace_id == workspace_id, AgentSession.user_id == user.id).order_by(AgentSession.created_at))).all()
     return {"session_ids": [str(session_id) for session_id in rows]}
+
+
+@router.get("/{workspace_id}/files")
+async def list_workspace_files(workspace_id: UUID, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    workspace = await owned_workspace(db, workspace_id, user.id)
+    if workspace.status != "active":
+        raise HTTPException(409, "workspace_unavailable")
+    try:
+        return {"items": await RuntimeClient().list_workspace_files(str(user.id), workspace.storage_key)}
+    except RuntimeWorkspaceFileError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+
+
+@router.post("/{workspace_id}/files", status_code=201)
+async def upload_workspace_file(
+    workspace_id: UUID,
+    response: Response,
+    path: str = Form(),
+    file: UploadFile = File(),
+    overwrite: bool = Form(default=False),
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        workspace = await file_mutation_workspace(db, workspace_id, user.id)
+
+        async def chunks():
+            while chunk := await file.read(64 * 1024):
+                yield chunk
+
+        result = await RuntimeClient().upload_workspace_file(str(user.id), workspace.storage_key, path, overwrite, chunks())
+        await db.commit()
+        if not result["created"]:
+            response.status_code = 200
+        return {key: value for key, value in result.items() if key != "created"}
+    except RuntimeWorkspaceFileError as exc:
+        await db.rollback()
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    except RuntimeUnavailableError:
+        await db.rollback()
+        raise
+    except HTTPException:
+        await db.rollback()
+        raise
+    finally:
+        await file.close()
+
+
+@router.delete("/{workspace_id}/files", status_code=204)
+async def delete_workspace_file(workspace_id: UUID, path: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    try:
+        workspace = await file_mutation_workspace(db, workspace_id, user.id)
+        await RuntimeClient().delete_workspace_file(str(user.id), workspace.storage_key, path)
+        await db.commit()
+    except RuntimeWorkspaceFileError as exc:
+        await db.rollback()
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    except RuntimeUnavailableError:
+        await db.rollback()
+        raise
+    except HTTPException:
+        await db.rollback()
+        raise
 
 
 @router.delete("/{workspace_id}", status_code=204)

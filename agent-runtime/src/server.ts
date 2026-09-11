@@ -6,9 +6,31 @@ import { SessionRegistry } from "./sessions/session-registry.js";
 import { createSession, deleteWorkspaceData, ensureRuntimeHome, InvalidSessionFileKeyError, type SessionInput, type WorkspaceSessionFile } from "./sessions/session-factory.js";
 import { projectMessageEnd, type CompletedTool } from "./sessions/event-projection.js";
 import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import {
+	deleteWorkspaceFile,
+	InvalidWorkspaceFilePathError,
+	listWorkspaceFiles,
+	UnsupportedWorkspaceFileTypeError,
+	uploadWorkspaceFile,
+	WorkspaceFileExistsError,
+	WorkspaceFileNotFoundError,
+	WorkspaceFileTooLargeError,
+	WorkspaceStorageLimitError,
+} from "./workspaces/file-storage.js";
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, bodyLimit: config.workspaceFileMaxBytes + 1 });
 const registry = new SessionRegistry();
+app.addContentTypeParser("application/octet-stream", (_request, payload, done) => done(null, payload));
+
+function fileError(reply: { code(code: number): { send(body: object): unknown } }, error: unknown): unknown {
+	if (error instanceof InvalidWorkspaceFilePathError) return reply.code(422).send({ error: error.message });
+	if (error instanceof UnsupportedWorkspaceFileTypeError) return reply.code(422).send({ error: error.message });
+	if (error instanceof WorkspaceFileExistsError) return reply.code(409).send({ error: error.message });
+	if (error instanceof WorkspaceFileNotFoundError) return reply.code(404).send({ error: error.message });
+	if (error instanceof WorkspaceStorageLimitError) return reply.code(409).send({ error: error.message });
+	if (error instanceof WorkspaceFileTooLargeError) return reply.code(413).send({ error: error.message });
+	throw error;
+}
 async function providerCatalog(): Promise<{ id: string; name: string }[]> {
 	const runtime = await (await import("@earendil-works/pi-coding-agent")).ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null });
 	return [...runtime.getProviders().map((provider) => ({ id: provider.id, name: provider.name ?? provider.id })), { id: "faux", name: "Faux" }];
@@ -72,6 +94,36 @@ app.delete<{ Params: { workspaceKey: string }; Body: { sessions?: WorkspaceSessi
 	}
 	for (const sessionId of sessionIds) registry.delete(sessionId);
 	return reply.code(204).send();
+});
+app.get<{ Params: { workspaceKey: string } }>("/internal/v1/workspaces/:workspaceKey/files", async (request, reply) => {
+	if (!authenticated(request, reply)) return;
+	try {
+		return { items: await listWorkspaceFiles(request.params.workspaceKey) };
+	} catch (error) {
+		return fileError(reply, error);
+	}
+});
+app.put<{ Params: { workspaceKey: string }; Querystring: { path?: string; overwrite?: string }; Body: AsyncIterable<Uint8Array> }>("/internal/v1/workspaces/:workspaceKey/files", async (request, reply) => {
+	if (!authenticated(request, reply)) return;
+	if (typeof request.query.path !== "string" || (request.query.overwrite !== undefined && request.query.overwrite !== "true" && request.query.overwrite !== "false")) {
+		return reply.code(422).send({ error: "invalid_file_path" });
+	}
+	try {
+		const file = await uploadWorkspaceFile(request.params.workspaceKey, request.query.path, request.body, request.query.overwrite === "true");
+		return reply.code(file.created ? 201 : 200).send(file);
+	} catch (error) {
+		return fileError(reply, error);
+	}
+});
+app.delete<{ Params: { workspaceKey: string }; Querystring: { path?: string } }>("/internal/v1/workspaces/:workspaceKey/files", async (request, reply) => {
+	if (!authenticated(request, reply)) return;
+	if (typeof request.query.path !== "string") return reply.code(422).send({ error: "invalid_file_path" });
+	try {
+		await deleteWorkspaceFile(request.params.workspaceKey, request.query.path);
+		return reply.code(204).send();
+	} catch (error) {
+		return fileError(reply, error);
+	}
 });
 app.post<{ Params: { id: string }; Body: { content: string } }>("/internal/v1/sessions/:id/chat", async (request, reply) => {
 	const tenant = authenticated(request, reply); if (!tenant) return;

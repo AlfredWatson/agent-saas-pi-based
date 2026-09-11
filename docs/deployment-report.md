@@ -38,12 +38,12 @@
                                             └── 外部 LLM Provider API
 ```
 
-| 组件 | 启动方式 | 责任 | 持久化 |
-| --- | --- | --- | --- |
-| Gateway | 宿主机 `uvicorn` | JWT、租户权限、密钥加密、API/SSE、公共投影、Runtime 编排 | PostgreSQL |
-| PostgreSQL | `infra/compose.dev.yml` | `platform` schema 业务数据与 Alembic 状态 | `postgres-data` 卷 |
-| Agent Runtime | Gateway 按用户 Docker API 创建 | Pi SDK、活动会话、Pi JSONL、租户工作区、工具执行 | 租户目录挂载 |
-| 外部 Provider | 外部服务 | 模型推理 | 不在系统内 |
+| 组件          | 启动方式                       | 责任                                                     | 持久化               |
+| ------------- | ------------------------------ | -------------------------------------------------------- | -------------------- |
+| Gateway       | 宿主机`uvicorn`              | JWT、租户权限、密钥加密、API/SSE、公共投影、Runtime 编排 | PostgreSQL           |
+| PostgreSQL    | `infra/compose.dev.yml`      | `platform` schema 业务数据与 Alembic 状态              | `postgres-data` 卷 |
+| Agent Runtime | Gateway 按用户 Docker API 创建 | Pi SDK、活动会话、Pi JSONL、租户工作区、工具执行         | 租户目录挂载         |
+| 外部 Provider | 外部服务                       | 模型推理                                                 | 不在系统内           |
 
 Provider 密钥仅在 Chat 时由 Gateway 解密，经内部 loopback 调用交给 Runtime，通过 `ModelRuntime.setRuntimeApiKey()` 置于 Runtime 内存凭据存储。Runtime 内部接口同时要求 `Authorization: Bearer <RUNTIME_SHARED_SECRET>` 与 `X-Tenant-ID`，不能作为客户端 API 使用。
 
@@ -57,22 +57,25 @@ cp .env.example .env
 
 生产环境设定 `ENVIRONMENT=production`，并替换全部占位值：
 
-| 变量 | 用途 | 生产要求 |
-| --- | --- | --- |
-| `JWT_SECRET` | JWT HS256 签名 | 独立的高熵随机值 |
-| `ENCRYPTION_KEY` | Provider 密钥 AEAD 加密 | 32 字节 URL-safe Base64 密钥 |
-| `RUNTIME_SHARED_SECRET` | Gateway ↔ Runtime 内部 Bearer | 与 JWT/Provider 密钥均不同的高熵值 |
-| `POSTGRES_PASSWORD` | PostgreSQL 密码 | 非空且由密钥系统托管 |
-| `WORKSPACE_MAX_PER_USER` | 每用户 Workspace 数量上限 | `unlimited` 或不小于 1 的整数；包含 `default` |
-| `WORKSPACE_STORAGE_LIMIT_MB` | 每用户所有 workspace 文件软上限 | 默认 1024 MB；达到上限后拒绝后续创建和 Chat |
-| `POSTGRES_HOST/PORT/USER/DATABASE` | Gateway 数据库连接 | 默认是 `localhost:5432`，须按目标环境调整 |
-| `RUNTIME_DOCKER_IMAGE` | Runtime 镜像 | 必须已导入目标 Docker daemon |
-| `RUNTIME_DOCKER_NETWORK` | Runtime bridge 网络 | Gateway 有权限创建和使用 |
-| `RUNTIME_SOURCE_DIR` | Runtime 源码只读挂载源 | 必须存在的实际路径 |
-| `RUNTIME_DATA_HOST_ROOT` | 租户数据根目录 | 持久化磁盘，纳入备份和权限控制 |
-| `RUNTIME_*_LIMIT` | 启停和资源限制 | 按节点容量和配额设置 |
+| 变量                                 | 用途                            | 生产要求                                          |
+| ------------------------------------ | ------------------------------- | ------------------------------------------------- |
+| `JWT_SECRET`                       | JWT HS256 签名                  | 独立的高熵随机值                                  |
+| `ENCRYPTION_KEY`                   | Provider 密钥 AEAD 加密         | 32 字节 URL-safe Base64 密钥                      |
+| `RUNTIME_SHARED_SECRET`            | Gateway ↔ Runtime 内部 Bearer  | 与 JWT/Provider 密钥均不同的高熵值                |
+| `POSTGRES_PASSWORD`                | PostgreSQL 密码                 | 非空且由密钥系统托管                              |
+| `WORKSPACE_MAX_PER_USER`           | 每用户 Workspace 数量上限       | `unlimited` 或不小于 1 的整数；包含 `default` |
+| `WORKSPACE_STORAGE_LIMIT_MB`       | 每用户所有 workspace 文件软上限 | 默认 1024 MB；达到上限后拒绝后续创建和 Chat       |
+| `WORKSPACE_FILE_MAX_MB`            | 单个 Workspace 文件上传硬上限   | 默认 100 MB；超出时上传返回`413 file_too_large` |
+| `POSTGRES_HOST/PORT/USER/DATABASE` | Gateway 数据库连接              | 默认是`localhost:5432`，须按目标环境调整        |
+| `RUNTIME_DOCKER_IMAGE`             | Runtime 镜像                    | 必须已导入目标 Docker daemon                      |
+| `RUNTIME_DOCKER_NETWORK`           | Runtime bridge 网络             | Gateway 有权限创建和使用                          |
+| `RUNTIME_SOURCE_DIR`               | Runtime 源码只读挂载源          | 必须存在的实际路径                                |
+| `RUNTIME_DATA_HOST_ROOT`           | 租户数据根目录                  | 持久化磁盘，纳入备份和权限控制                    |
+| `RUNTIME_*_LIMIT`                  | 启停和资源限制                  | 按节点容量和配额设置                              |
 
 生产模式下，Gateway 会拒绝占位 JWT/Runtime secret/加密密钥及空数据库密码。开发模式允许模板占位值，仅限本地开发，不能对外暴露。
+
+修改 `WORKSPACE_STORAGE_LIMIT_MB` 或 `WORKSPACE_FILE_MAX_MB` 后，重启 Gateway，并对已存在的用户 Runtime 调用 `POST /api/v1/runtime:recreate`，使容器获得新的环境变量；本功能只改 Runtime 源码挂载内容和环境变量，不需要重建镜像。
 
 ## 4. 推荐部署步骤
 
@@ -173,28 +176,28 @@ SMOKE_PROVIDER=faux uv run python scripts/smoke_flow.py
 
 ## 7. 运维、观察与故障处理
 
-| 情况 | 观察方式 | 处理方向 |
-| --- | --- | --- |
-| Gateway 无法启动 | Uvicorn 日志、`platform` 迁移状态 | 检查数据库、迁移、Docker socket、源目录、镜像和网络。 |
-| `runtime_unavailable` | `GET /api/v1/runtime`、Docker daemon 日志 | 检查镜像、Docker 权限/daemon、Runtime 网络和健康检查。 |
-| `runtime_busy` | Session/Run 记录、SSE | 等 Run 完成或先 `abort`，再 stop/recreate。 |
-| 模型调用失败 | SSE `message.failed`、Gateway/Runtime 日志 | 核对 Binding、Provider 凭据、出网/DNS、模型 ID、资源。 |
-| 历史缺内容 | `GET /sessions/{id}/messages` | 对照 `sequence`、`message_end` 和 Runtime JSONL。 |
-| 容器异常 | `docker ps -a`、`docker logs <container>` | 排障后用受控 Runtime recreate，避免不可追溯的手工修改。 |
+| 情况                    | 观察方式                                      | 处理方向                                                |
+| ----------------------- | --------------------------------------------- | ------------------------------------------------------- |
+| Gateway 无法启动        | Uvicorn 日志、`platform` 迁移状态           | 检查数据库、迁移、Docker socket、源目录、镜像和网络。   |
+| `runtime_unavailable` | `GET /api/v1/runtime`、Docker daemon 日志   | 检查镜像、Docker 权限/daemon、Runtime 网络和健康检查。  |
+| `runtime_busy`        | Session/Run 记录、SSE                         | 等 Run 完成或先`abort`，再 stop/recreate。            |
+| 模型调用失败            | SSE`message.failed`、Gateway/Runtime 日志   | 核对 Binding、Provider 凭据、出网/DNS、模型 ID、资源。  |
+| 历史缺内容              | `GET /sessions/{id}/messages`               | 对照`sequence`、`message_end` 和 Runtime JSONL。    |
+| 容器异常                | `docker ps -a`、`docker logs <container>` | 排障后用受控 Runtime recreate，避免不可追溯的手工修改。 |
 
 日志不得记录 Provider API key、JWT、`RUNTIME_SHARED_SECRET`、解密后的凭据或完整未处理工具载荷。公开 SSE 与数据库投影实施了秘密值脱敏与载荷截断；反向代理、APM 和集中日志仍要独立配置脱敏。
 
 ## 8. 当前验证证据与上线门禁
 
-| 项目 | 当前证据 | 结论 |
-| --- | --- | --- |
-| API 路由、请求体、SSE 事件 | 核对 `gateway/app/api/v1/` 与 Gateway Runtime 客户端 | 静态已核对 |
-| 启动/迁移顺序 | 核对 `gateway/app/main.py`、Alembic/模型 | 静态已核对 |
-| Docker 限制、网络、挂载 | 核对 `runtime_locator.py`、Dockerfile、环境模板 | 静态已核对 |
-| 镜像构建/离线导入 | 核对 `docs/runtime-image.md` | 静态已核对 |
-| PostgreSQL + Uvicorn + Docker + Faux SSE | 本次未启动服务 | 待现场验收 |
-| 真实 Provider 与 `verified_at` | 本次未使用真实凭据 | 待受控环境验收 |
-| Runtime 重建后的会话继续 | 脚本支持可选检查，本次未执行 | 待现场验收 |
-| TLS、反向代理、备份恢复、告警 | 仓库未提供生产编排/监控配置 | 目标环境补齐 |
+| 项目                                     | 当前证据                                              | 结论           |
+| ---------------------------------------- | ----------------------------------------------------- | -------------- |
+| API 路由、请求体、SSE 事件               | 核对`gateway/app/api/v1/` 与 Gateway Runtime 客户端 | 静态已核对     |
+| 启动/迁移顺序                            | 核对`gateway/app/main.py`、Alembic/模型             | 静态已核对     |
+| Docker 限制、网络、挂载                  | 核对`runtime_locator.py`、Dockerfile、环境模板      | 静态已核对     |
+| 镜像构建/离线导入                        | 核对`docs/runtime-image.md`                         | 静态已核对     |
+| PostgreSQL + Uvicorn + Docker + Faux SSE | 本次未启动服务                                        | 待现场验收     |
+| 真实 Provider 与`verified_at`          | 本次未使用真实凭据                                    | 待受控环境验收 |
+| Runtime 重建后的会话继续                 | 脚本支持可选检查，本次未执行                          | 待现场验收     |
+| TLS、反向代理、备份恢复、告警            | 仓库未提供生产编排/监控配置                           | 目标环境补齐   |
 
 建议将以下全部作为正式上线门禁：Faux smoke 通过、镜像架构匹配、迁移成功、Runtime 生命周期、SSE 断线持续执行、备份恢复演练、TLS/反向代理和密钥轮换。完成后，应将本报告的“待现场验收”替换为带日期、环境和证据的实测结论。

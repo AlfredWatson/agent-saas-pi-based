@@ -86,6 +86,76 @@ class RuntimeClient:
         except httpx.HTTPError as exc:
             raise RuntimeUnavailableError("runtime_workspace_delete_failed") from exc
 
+    async def list_workspace_files(self, user_id: str, workspace_key: str) -> list[dict]:
+        base_url = await self._base_url(user_id)
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(f"{base_url}/internal/v1/workspaces/{workspace_key}/files", headers=self._headers(user_id))
+        except httpx.HTTPError as exc:
+            raise RuntimeUnavailableError("runtime_workspace_file_list_failed") from exc
+        self._raise_file_operation_error(response)
+        return response.json()["items"]
+
+    async def upload_workspace_file(
+        self,
+        user_id: str,
+        workspace_key: str,
+        path: str,
+        overwrite: bool,
+        content: AsyncIterator[bytes],
+    ) -> dict:
+        base_url = await self._base_url(user_id)
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                response = await client.put(
+                    f"{base_url}/internal/v1/workspaces/{workspace_key}/files",
+                    headers={**self._headers(user_id), "Content-Type": "application/octet-stream"},
+                    params={"path": path, "overwrite": str(overwrite).lower()},
+                    content=content,
+                )
+        except httpx.HTTPError as exc:
+            raise RuntimeUnavailableError("runtime_workspace_file_upload_failed") from exc
+        self._raise_file_operation_error(response)
+        return response.json()
+
+    async def delete_workspace_file(self, user_id: str, workspace_key: str, path: str) -> None:
+        base_url = await self._base_url(user_id)
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.delete(
+                    f"{base_url}/internal/v1/workspaces/{workspace_key}/files",
+                    headers=self._headers(user_id),
+                    params={"path": path},
+                )
+        except httpx.HTTPError as exc:
+            raise RuntimeUnavailableError("runtime_workspace_file_delete_failed") from exc
+        self._raise_file_operation_error(response)
+
+    @staticmethod
+    def _raise_file_operation_error(response: httpx.Response) -> None:
+        if response.is_success:
+            return
+        if response.status_code in {404, 409, 413, 422}:
+            try:
+                error = response.json().get("error")
+            except ValueError:
+                error = None
+            if response.status_code == 413 and not isinstance(error, str):
+                error = "file_too_large"
+            if isinstance(error, str):
+                raise RuntimeWorkspaceFileError(response.status_code, error)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RuntimeUnavailableError("runtime_workspace_file_operation_failed") from exc
+
 
 class RuntimeWorkspaceBusyError(RuntimeError):
     pass
+
+
+class RuntimeWorkspaceFileError(RuntimeError):
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail

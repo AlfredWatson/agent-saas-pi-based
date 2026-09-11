@@ -195,6 +195,32 @@ Binding 必须属于当前用户且是 `active`：
 {"session_ids":["<session-uuid>"]}
 ```
 
+### `GET /workspaces/{workspace_id}/files`
+
+递归列出该 Workspace 中的普通文件，按 `path` 排序；没有实际文件目录时返回空列表。响应不包含目录、符号链接或特殊文件：
+
+```json
+{"items":[{"path":"src/app.py","size_bytes":1234,"modified_at":"2026-08-03T00:00:00.000Z"}]}
+```
+
+列表允许在 Agent Run 执行期间调用。
+
+### `POST /workspaces/{workspace_id}/files`
+
+以 `multipart/form-data` 上传单个文件：`path` 和 `file` 必填，`overwrite` 可选且默认 `false`。`path` 是 POSIX 相对路径，例如 `src/app.py`；禁止绝对路径、空路径、`.`/`..`、反斜杠、NUL、超长路径及符号链接路径。客户端文件名不作为目标路径。
+
+首次写入成功返回 `201`，显式 `overwrite=true` 的原子替换返回 `200`，响应均为：
+
+```json
+{"path":"src/app.py","size_bytes":1234,"modified_at":"2026-08-03T00:00:00.000Z"}
+```
+
+同路径且未启用覆盖为 `409 file_exists`；单文件超过 `WORKSPACE_FILE_MAX_MB` 为 `413 file_too_large`；超出用户总配额为 `409 workspace_storage_limit_reached`。执行中的 Workspace 拒绝上传，返回 `409 workspace_busy`。
+
+### `DELETE /workspaces/{workspace_id}/files?path=...`
+
+删除指定普通文件，成功返回 `204` 并清理空父目录（不删除 Workspace 根目录）。不存在返回 `404 file_not_found`；路径或文件类型不合法返回 `422 invalid_file_path` 或 `422 unsupported_file_type`；执行中的 Workspace 返回 `409 workspace_busy`。
+
 ### `DELETE /workspaces/{workspace_id}`
 
 删除该 Workspace 的目录、关联 Pi JSONL、Session、Run 和消息记录，成功返回 `204`。`default` 不能删除；若任一关联 Session 正在运行，返回 `409 workspace_busy` 且不删除任何内容。

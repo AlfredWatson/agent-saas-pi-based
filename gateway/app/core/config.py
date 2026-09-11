@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     runtime_pids_limit: int = Field(default=256, gt=0)
     workspace_max_per_user: int | None = Field(default=None, ge=1)
     workspace_storage_limit_mb: int = Field(default=1024, ge=1)
+    workspace_file_max_mb: int = Field(default=100, ge=1)
     jwt_issuer: str = "pi-saas"
     jwt_audience: str = "pi-saas-api"
 

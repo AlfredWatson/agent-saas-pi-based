@@ -44,3 +44,6 @@ def test_workspace_limit_configuration_accepts_unlimited_or_a_positive_integer()
         Settings(workspace_max_per_user=0)
     with pytest.raises(ValidationError):
         Settings(workspace_storage_limit_mb=0)
+    assert Settings(workspace_file_max_mb=100).workspace_file_max_mb == 100
+    with pytest.raises(ValidationError):
+        Settings(workspace_file_max_mb=0)

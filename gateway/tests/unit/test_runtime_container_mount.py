@@ -28,6 +28,8 @@ def test_tenant_directory_is_mounted_at_the_runtime_data_root(tmp_path):
         runtime_memory_limit="1g",
         runtime_nano_cpus=1_000_000_000,
         runtime_pids_limit=256,
+        workspace_storage_limit_mb=1024,
+        workspace_file_max_mb=100,
     )
     locator.client = SimpleNamespace(containers=containers)
     locator._container_name = lambda _: "runtime"
@@ -37,6 +39,8 @@ def test_tenant_directory_is_mounted_at_the_runtime_data_root(tmp_path):
     assert containers.kwargs["environment"] == {
         "TENANT_ID": str(user_id),
         "RUNTIME_SHARED_SECRET": "runtime-secret",
+        "WORKSPACE_STORAGE_LIMIT_MB": "1024",
+        "WORKSPACE_FILE_MAX_MB": "100",
     }
     assert containers.kwargs["volumes"][str(tmp_path / ".runtime-data" / "tenants" / str(user_id))] == {
         "bind": "/runtime-data",
