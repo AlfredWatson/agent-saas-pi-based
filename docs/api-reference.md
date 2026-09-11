@@ -1,6 +1,6 @@
 # Pi SaaS Platform API 文档
 
-> 版本：基于当前仓库源码整理，日期：2026-08-03。
+> 版本：基于当前仓库源码整理，日期：2026-09-11。
 >
 > 公共 API 根路径：`http(s)://<gateway-host>/api/v1`。本文描述 FastAPI Gateway 的对外契约；`/internal/v1/*` 是 Gateway 与 Runtime 的内部协议，不能经公网或客户端直接调用。
 
@@ -18,12 +18,14 @@ FastAPI Gateway (/api/v1)
 
 Gateway 负责身份认证、租户授权、Provider 密钥加密存储、运行记录、消息投影及对外 SSE；Runtime 仅负责 Pi SDK 会话、工具调用与 NDJSON 事件。Provider 密钥不会由公开读取接口返回。
 
-除注册和登录外，所有接口均要求：
+除注册和登录外，所有接口均要求 Bearer JWT：
 
 ```http
 Authorization: Bearer <access_token>
-Content-Type: application/json
 ```
+
+带 JSON 请求体的接口使用 `Content-Type: application/json`；Workspace 文件上传是
+`multipart/form-data`，无请求体的 `GET` 与 `DELETE` 不需要 `Content-Type`。
 
 ID 均为 UUID。时间字段为带时区的 ISO 8601 时间。所有资源按当前登录用户隔离；访问他人资源通常返回 `404`，而不是泄露其是否存在。
 
@@ -183,7 +185,7 @@ Binding 必须属于当前用户且是 `active`：
 ```
 
 成功：`201 {"id":"<workspace-uuid>","name":"project-a","status":"active","is_current":false}`。
-首次实际 Chat 时才创建目录。名称非法为 `422 invalid_workspace_name`；重名、数量上限或存储上限分别为 `409 workspace_exists`、`workspace_limit_reached`、`workspace_storage_limit_reached`。
+首次实际 Chat 或文件上传时才创建目录。名称非法为 `422 invalid_workspace_name`；重名、数量上限或存储上限分别为 `409 workspace_exists`、`workspace_limit_reached`、`workspace_storage_limit_reached`。
 
 ### `POST /workspaces/{workspace_id}:switch`
 
@@ -204,6 +206,11 @@ Binding 必须属于当前用户且是 `active`：
 ```
 
 列表允许在 Agent Run 执行期间调用。
+
+三个文件接口都会按需启动当前用户的 Runtime；因此 Docker、镜像或 Runtime
+健康检查失败时可返回 `503 {"detail":"runtime_unavailable"}`。Workspace 不存在
+或不属于当前用户时返回 `404 workspace_not_found`；已不可用时返回
+`409 workspace_unavailable`。
 
 ### `POST /workspaces/{workspace_id}/files`
 
