@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from getpass import getpass
 
 import httpx
 
-BASE_URL = os.getenv("GATEWAY_URL", "http://127.0.0.1:21995").rstrip("/")
+from gateway_config import gateway_url
+
+BASE_URL = gateway_url()
 
 
 def show(step: str, response: httpx.Response) -> dict:

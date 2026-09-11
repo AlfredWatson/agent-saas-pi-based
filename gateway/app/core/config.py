@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     postgres_database: str = "pi_saas"
     postgres_max_connections: int = Field(default=10, gt=0)
     environment: str = "development"
+    gateway_host: str = "127.0.0.1"
+    gateway_port: int = Field(default=8000, gt=0, le=65535)
     jwt_secret: str = "development-only-secret-must-be-replaced"
     encryption_key: str = ""
     runtime_shared_secret: str = "shared-dev"

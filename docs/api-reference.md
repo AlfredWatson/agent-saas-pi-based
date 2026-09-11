@@ -48,7 +48,8 @@ uv run python scripts/api_test_register_login_provider.py
 uv run python scripts/api_test_login_session_chat.py
 ```
 
-脚本使用 `GATEWAY_URL` 指向实际 Gateway 地址。
+脚本默认使用 `.env` 的 `GATEWAY_HOST` 和 `GATEWAY_PORT`。可设置完整的
+`GATEWAY_URL` 临时覆盖该地址。
 
 ## 3. 认证
 

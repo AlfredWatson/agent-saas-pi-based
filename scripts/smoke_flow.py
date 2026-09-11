@@ -5,7 +5,9 @@ import time
 from uuid import uuid4
 import httpx
 
-base = os.getenv("GATEWAY_URL", "http://127.0.0.1:8000")
+from gateway_config import gateway_url
+
+base = gateway_url()
 email = f"smoke-{uuid4().hex[:12]}@example.com"
 password = "correct-horse-battery-staple"
 with httpx.Client(timeout=30, trust_env=False) as client:

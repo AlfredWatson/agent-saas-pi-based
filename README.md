@@ -17,9 +17,11 @@ and owns active Pi SDK sessions and JSONL history.
 1. Build/import the Runtime image as described in [Runtime image delivery](docs/runtime-image.md).
 2. Copy `.env.example` to `.env`, set `POSTGRES_*`, and replace both secrets and the encryption key.
 3. Ensure the Gateway host can access the Docker daemon; Gateway creates the dedicated Runtime containers.
-4. Start PostgreSQL with `docker compose -f infra/compose.dev.yml up -d`.
+4. Start PostgreSQL with `docker compose --env-file .env -f infra/compose.dev.yml up -d`.
 5. Install Python dependencies with `uv sync`, then run
-   `uv run uvicorn gateway.app.main:app --reload --port 8000`.
+   `uv run python scripts/start_gateway.py --reload`. Without `--host` or
+   `--port`, the Gateway listens on `GATEWAY_HOST` and `GATEWAY_PORT` from
+   `.env`.
 
 The default Runtime catalog is intentionally limited. A production deployment
 must use a dedicated tenant container, a real secret store, an LLM gateway or

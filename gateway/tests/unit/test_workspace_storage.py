@@ -38,6 +38,9 @@ def test_workspace_directory_rejects_an_escaping_key(tmp_path):
 
 
 def test_workspace_limit_configuration_accepts_unlimited_or_a_positive_integer():
+    assert Settings(gateway_host="127.0.0.1", gateway_port=21995).gateway_port == 21995
+    with pytest.raises(ValidationError):
+        Settings(gateway_port=0)
     assert Settings(workspace_max_per_user="unlimited").workspace_max_per_user is None
     assert Settings(workspace_max_per_user=1).workspace_max_per_user == 1
     with pytest.raises(ValidationError):

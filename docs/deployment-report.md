@@ -67,6 +67,7 @@ cp .env.example .env
 | `ENCRYPTION_KEY`                   | Provider 密钥 AEAD 加密         | 32 字节 URL-safe Base64 密钥                      |
 | `RUNTIME_SHARED_SECRET`            | Gateway ↔ Runtime 内部 Bearer  | 与 JWT/Provider 密钥均不同的高熵值                |
 | `POSTGRES_PASSWORD`                | PostgreSQL 密码                 | 非空且由密钥系统托管                              |
+| `GATEWAY_HOST/PORT`                | Gateway 监听地址与端口          | 默认`127.0.0.1:8000`；生产保持 loopback 并由反向代理访问 |
 | `WORKSPACE_MAX_PER_USER`           | 每用户 Workspace 数量上限       | `unlimited` 或不小于 1 的整数；包含 `default` |
 | `WORKSPACE_STORAGE_LIMIT_MB`       | 每用户所有 workspace 文件软上限 | 默认 1024 MB；达到上限后拒绝后续创建和 Chat       |
 | `WORKSPACE_FILE_MAX_MB`            | 单个 Workspace 文件上传硬上限   | 默认 100 MB；超出时上传返回`413 file_too_large` |
@@ -130,8 +131,11 @@ Compose 不会取得 `POSTGRES_PASSWORD`，并会在配置解析阶段失败。
 
 ```bash
 uv sync
-uv run uvicorn gateway.app.main:app --host 127.0.0.1 --port 8000
+uv run python scripts/start_gateway.py
 ```
+
+启动器默认读取 `.env` 的 `GATEWAY_HOST` 与 `GATEWAY_PORT`；仅在临时覆盖时
+传入 `--host` 或 `--port`，例如 `--port 8001`。
 
 启动顺序为：记录脱敏后的连接信息 → Alembic 升级到 `head` → 确保 `platform` schema → 终止崩溃遗留的 Run → 检查源码目录、数据根、Docker daemon、镜像及网络。任一步失败都应令启动失败，避免提供半可用 API。
 
