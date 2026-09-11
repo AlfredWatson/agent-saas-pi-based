@@ -102,7 +102,9 @@ memory-bank
 /parse_output/
 
 # 自定义
-pi-main/
-agent-runtime/node_modules/
-agent-runtime/.runtime-data/
-.runtime-data/
+/pi-main/
+/agent-runtime/node_modules/**
+/agent-runtime/.runtime-data/**
+.runtime-data/**
+/tests/**
+/docker/volumes/**
