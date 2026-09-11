@@ -4,7 +4,9 @@ First-phase multi-user control plane for `pi-coding-agent`.
 
 ```text
 Client -> FastAPI Gateway (:8000) -> per-user Docker Runtime (:3000) -> Pi SDK
-                                  -> PostgreSQL
+                                  -> PostgreSQL (platform + rag schemas)
+                                  -> Redis (RAG intermediate cache)
+                     RAG Worker -> PostgreSQL + Redis -> model providers
 ```
 
 The Gateway owns JWT authentication, encrypted provider bindings, profiles,
@@ -17,11 +19,18 @@ and owns active Pi SDK sessions and JSONL history.
 1. Build/import the Runtime image as described in [Runtime image delivery](docs/runtime-image.md).
 2. Copy `.env.example` to `.env`, set `POSTGRES_*`, and replace both secrets and the encryption key.
 3. Ensure the Gateway host can access the Docker daemon; Gateway creates the dedicated Runtime containers.
-4. Start PostgreSQL with `docker compose --env-file .env -f infra/compose.dev.yml up -d`.
+4. When `.env` points to an existing PostgreSQL with pgvector available, start only Redis with
+   `docker compose --env-file .env -f infra/compose.dev.yml up -d redis`. For an isolated
+   development database, the same Compose file also provides the optional `postgres` service.
 5. Install Python dependencies with `uv sync`, then run
    `uv run python scripts/start_gateway.py --reload`. Without `--host` or
    `--port`, the Gateway listens on `GATEWAY_HOST` and `GATEWAY_PORT` from
    `.env`.
+6. In a separate process run `uv run python scripts/start_rag_worker.py` for
+   document parsing, chunking, embedding and graph extraction jobs.
+
+The RAG API is scoped below each Workspace and is independent from the Agent
+Runtime. See [Multi-tenant RAG](docs/rag.md) for lifecycle and API examples.
 
 The default Runtime catalog is intentionally limited. A production deployment
 must use a dedicated tenant container, a real secret store, an LLM gateway or

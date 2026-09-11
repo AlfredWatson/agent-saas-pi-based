@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import quote
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -7,7 +8,9 @@ from sqlalchemy import URL
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=Path(__file__).parents[3] / ".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=Path(__file__).parents[3] / ".env", extra="ignore"
+    )
     postgres_host: str = "localhost"
     postgres_port: int = Field(default=5432, gt=0, le=65535)
     postgres_user: str = "hpc_ai_tech"
@@ -32,25 +35,108 @@ class Settings(BaseSettings):
     workspace_max_per_user: int | None = Field(default=None, ge=1)
     workspace_storage_limit_mb: int = Field(default=1024, ge=1)
     workspace_file_max_mb: int = Field(default=100, ge=1)
+    document_processing_service: str = "default"
+    vector_base: str = "p"
+    graph_base: str = "p"
+    redis_host: str = "127.0.0.1"
+    redis_port: int = Field(default=6379, gt=0, le=65535)
+    redis_username: str = Field(default="admin", pattern=r"^[A-Za-z0-9_-]+$")
+    redis_password: str = "development-redis-password"
+    redis_database: int = Field(default=0, ge=0)
+    redis_max_connections: int = Field(default=20, gt=0)
+    rag_cache_ttl_seconds: int = Field(default=604800, ge=60)
+    rag_job_lease_seconds: int = Field(default=120, ge=30)
+    rag_worker_poll_seconds: float = Field(default=1.0, gt=0, le=60)
+    rag_operation_max_attempts: int = Field(default=3, ge=1, le=20)
+    rag_default_chunking_concurrency: int = Field(default=2, ge=1)
+    rag_default_embedding_concurrency: int = Field(default=2, ge=1)
+    rag_default_graph_concurrency: int = Field(default=1, ge=1)
+    rag_max_chunking_concurrency: int = Field(default=8, ge=1)
+    rag_max_embedding_concurrency: int = Field(default=8, ge=1)
+    rag_max_graph_concurrency: int = Field(default=4, ge=1)
+    rag_document_max_mb: int = Field(default=100, ge=1)
+    rag_upload_max_files: int = Field(default=20, ge=1, le=100)
+    chunk_max_token_size: int = Field(default=512, ge=32)
+    chunk_overlap_token_size: int = Field(default=64, ge=0)
+    chunk_split_by_character: str = "\n\n"
+    chunk_re_expression: str = r"\n{2,}|(?<=[。！？.!?])\s+"
+    chunk_breakpoint_threshold: float = Field(default=95.0, gt=0, lt=100)
+    rag_model_base_url_allow_private: bool = False
+    rag_model_request_timeout_seconds: int = Field(default=60, ge=1, le=600)
+    rag_model_max_retries: int = Field(default=1, ge=0, le=10)
+    langsmith_api_key: str | None = None
+    langsmith_tracing: bool = False
+    langsmith_project: str = "pi-saas-rag"
     jwt_issuer: str = "pi-saas"
     jwt_audience: str = "pi-saas-api"
 
     @field_validator("workspace_max_per_user", mode="before")
     @classmethod
     def parse_workspace_max_per_user(cls, value):
-        if value is None or (isinstance(value, str) and value.strip().lower() == "unlimited"):
+        if value is None or (
+            isinstance(value, str) and value.strip().lower() == "unlimited"
+        ):
             return None
         return value
 
     @model_validator(mode="after")
     def validate_secrets(self):
-        insecure = {"", "development-only-secret-must-be-replaced", "shared-dev", "replace-with-a-long-runtime-secret"}
-        if self.environment != "development" and (self.jwt_secret in insecure or self.runtime_shared_secret in insecure):
+        insecure = {
+            "",
+            "development-only-secret-must-be-replaced",
+            "shared-dev",
+            "replace-with-a-long-runtime-secret",
+        }
+        if self.environment != "development" and (
+            self.jwt_secret in insecure or self.runtime_shared_secret in insecure
+        ):
             raise ValueError("JWT_SECRET and RUNTIME_SHARED_SECRET must be configured")
-        if self.environment != "development" and (not self.encryption_key or self.encryption_key == "replace-with-32-byte-url-safe-base64-key"):
-            raise ValueError("ENCRYPTION_KEY must be a configured 32-byte url-safe base64 key")
+        if self.environment != "development" and (
+            not self.encryption_key
+            or self.encryption_key == "replace-with-32-byte-url-safe-base64-key"
+        ):
+            raise ValueError(
+                "ENCRYPTION_KEY must be a configured 32-byte url-safe base64 key"
+            )
         if self.environment != "development" and not self.postgres_password:
             raise ValueError("POSTGRES_PASSWORD must be configured")
+        if self.environment != "development" and self.redis_password in {
+            "",
+            "development-redis-password",
+            "replace-with-a-long-redis-password",
+        }:
+            raise ValueError("REDIS_PASSWORD must be configured")
+        if self.document_processing_service != "default":
+            raise ValueError(
+                "DOCUMENT_PROCESSING_SERVICE currently supports only 'default'"
+            )
+        if self.vector_base != "p":
+            raise ValueError("VECTOR_BASE currently supports only 'p' (postgresql)")
+        if self.graph_base != "p":
+            raise ValueError("GRAPH_BASE currently supports only 'p' (postgresql)")
+        if self.chunk_overlap_token_size >= self.chunk_max_token_size:
+            raise ValueError(
+                "CHUNK_OVERLAP_TOKEN_SIZE must be smaller than CHUNK_MAX_TOKEN_SIZE"
+            )
+        for default_value, maximum, label in (
+            (
+                self.rag_default_chunking_concurrency,
+                self.rag_max_chunking_concurrency,
+                "chunking",
+            ),
+            (
+                self.rag_default_embedding_concurrency,
+                self.rag_max_embedding_concurrency,
+                "embedding",
+            ),
+            (
+                self.rag_default_graph_concurrency,
+                self.rag_max_graph_concurrency,
+                "graph",
+            ),
+        ):
+            if default_value > maximum:
+                raise ValueError(f"default {label} concurrency exceeds its maximum")
         return self
 
     @property
@@ -65,18 +151,32 @@ class Settings(BaseSettings):
         )
 
     @property
+    def redis_url(self) -> str:
+        username = quote(self.redis_username, safe="")
+        password = quote(self.redis_password, safe="")
+        return f"redis://{username}:{password}@{self.redis_host}:{self.redis_port}/{self.redis_database}"
+
+    @property
     def project_root(self) -> Path:
         return Path(__file__).parents[3]
 
     @property
     def resolved_runtime_source_dir(self) -> Path:
         path = self.runtime_source_dir
-        return (self.project_root / path).resolve() if not path.is_absolute() else path.resolve()
+        return (
+            (self.project_root / path).resolve()
+            if not path.is_absolute()
+            else path.resolve()
+        )
 
     @property
     def resolved_runtime_data_host_root(self) -> Path:
         path = self.runtime_data_host_root
-        return (self.project_root / path).resolve() if not path.is_absolute() else path.resolve()
+        return (
+            (self.project_root / path).resolve()
+            if not path.is_absolute()
+            else path.resolve()
+        )
 
 
 @lru_cache

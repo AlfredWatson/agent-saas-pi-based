@@ -2,6 +2,7 @@
 
 Revision ID: 0001_initial
 """
+
 from alembic import op
 from app.db.models import Base
 
@@ -10,10 +11,18 @@ down_revision = None
 branch_labels = None
 depends_on = None
 
+
 def upgrade() -> None:
     op.execute("CREATE SCHEMA IF NOT EXISTS platform")
     bind = op.get_bind()
-    Base.metadata.create_all(bind, checkfirst=True)
+    platform_tables = [
+        table for table in Base.metadata.sorted_tables if table.schema == "platform"
+    ]
+    Base.metadata.create_all(bind, tables=platform_tables, checkfirst=True)
+
 
 def downgrade() -> None:
-    Base.metadata.drop_all(op.get_bind(), checkfirst=True)
+    platform_tables = [
+        table for table in Base.metadata.sorted_tables if table.schema == "platform"
+    ]
+    Base.metadata.drop_all(op.get_bind(), tables=platform_tables, checkfirst=True)

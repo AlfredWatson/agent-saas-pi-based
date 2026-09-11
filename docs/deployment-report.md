@@ -12,12 +12,13 @@
 
 ## 1. 结论
 
-当前仓库实现的是“宿主机 Gateway + 宿主机 PostgreSQL Compose 服务 + 按用户懒创建 Docker Runtime”，不是把 Gateway 放入 Compose，也不是一个共享 Runtime 服务承载所有用户。
+当前仓库实现的是“宿主机 Gateway/RAG Worker + Compose PostgreSQL/Redis 服务 + 按用户懒创建 Docker Runtime”，不是把 Gateway 放入 Compose，也不是一个共享 Runtime 服务承载所有用户。
 
 已具备的源码部署要素：
 
 - FastAPI Gateway 启动时执行 Alembic、确保 `platform` schema、把残留 `running` Run 标记为 `interrupted`，并在接受请求前检查 Docker Runtime 前置条件。
-- 开发 Compose 使用 `postgres:17-alpine`，数据通过具名卷 `postgres-data` 持久化，端口映射为宿主机 `5432`。
+- 开发 Compose 使用 `pgvector/pgvector:pg17` 和 `redis:7.4-alpine`；PostgreSQL 使用具名卷，Redis AOF 挂载到 `docker/volumes/redis/`。
+- RAG Worker 从 PostgreSQL 三类持久队列取任务，Redis 只保存可恢复中间结果。
 - Gateway 使用 Docker API 为每位用户创建只绑定 `127.0.0.1` 的 Runtime；租户数据在 `.runtime-data/tenants/<user-id>`。
 - Runtime 采用只读根文件系统、tmpfs、全 capability drop、`no-new-privileges` 与内存/CPU/PID 限制；源码只读挂载。
 
@@ -29,9 +30,10 @@
 互联网客户端
      │ HTTPS（建议反向代理终结 TLS）
      ▼
-宿主机 FastAPI Gateway :8000
-     ├──── localhost:5432 ──── PostgreSQL 17（Compose）
-     │        └── platform schema / postgres-data volume
+宿主机 FastAPI Gateway :8000 + 独立 RAG Worker
+     ├──── localhost:5432 ──── PostgreSQL 17 + pgvector（Compose）
+     │        └── platform/rag schema / postgres-data volume
+     ├──── localhost:6379 ──── Redis 7.4 ACL + AOF（Compose）
      │
      └──── Docker API ──── 每用户 Runtime 容器
                               ├── 127.0.0.1:<动态端口> → :3000
@@ -45,7 +47,9 @@
 | 组件          | 启动方式                       | 责任                                                     | 持久化               |
 | ------------- | ------------------------------ | -------------------------------------------------------- | -------------------- |
 | Gateway       | 宿主机`uvicorn`              | JWT、租户权限、密钥加密、API/SSE、公共投影、Runtime 编排 | PostgreSQL           |
-| PostgreSQL    | `infra/compose.dev.yml`      | `platform` schema 业务数据与 Alembic 状态              | `postgres-data` 卷 |
+| PostgreSQL    | `infra/compose.dev.yml`      | `platform`/`rag` schema、pgvector 与 Alembic            | `postgres-data` 卷 |
+| Redis         | `infra/compose.dev.yml`      | RAG 可恢复中间缓存                                      | `docker/volumes/redis/` |
+| RAG Worker    | 宿主机独立 Python 进程        | 文档解析、切分、向量化、图谱提取和维护操作               | PostgreSQL/Redis |
 | Agent Runtime | Gateway 按用户 Docker API 创建 | Pi SDK、活动会话、Pi JSONL、租户工作区、工具执行         | 租户目录挂载         |
 | 外部 Provider | 外部服务                       | 模型推理                                                 | 不在系统内           |
 
@@ -113,25 +117,29 @@ docker image inspect pi-saas-agent-runtime:0.82.1-dev --format '{{.Os}}/{{.Archi
 
 确认架构与目标节点匹配。只修改 `agent-runtime/src` 后，调用 `POST /api/v1/runtime:recreate` 可加载新挂载源码；只有锁文件、系统工具或基础镜像变更才需要重新构建/导入镜像。
 
-### 4.3 启动 PostgreSQL
+### 4.3 连接 PostgreSQL 并启动 Redis
 
 先在仓库根目录 `.env` 中设置 `POSTGRES_PASSWORD`：
 
 ```bash
-docker compose --env-file .env -f infra/compose.dev.yml up -d
+# 当前机器复用 .env 中已部署的 PostgreSQL
+docker compose --env-file .env -f infra/compose.dev.yml up -d redis
 docker compose --env-file .env -f infra/compose.dev.yml ps
 ```
 
 `compose.dev.yml` 位于 `infra/`，因此必须显式指定仓库根目录的 `.env`；否则
 Compose 不会取得 `POSTGRES_PASSWORD`，并会在配置解析阶段失败。
 
-该 Compose 只启动 PostgreSQL；Gateway 在宿主机运行。当前开发配置将 5432 映射到宿主机所有接口，生产建议移除此映射或用私网/防火墙限制到仅 Gateway 可达。
+该 Compose 也保留可选的 PostgreSQL/pgvector 开发服务，但现有数据库部署不应启动它。
+Gateway 和 RAG Worker 在宿主机运行。当前 Redis 开发配置映射 6379，生产建议移除
+公开映射或用私网/防火墙限制。
 
 ### 4.4 启动 Gateway
 
 ```bash
 uv sync
 uv run python scripts/start_gateway.py
+uv run python scripts/start_rag_worker.py
 ```
 
 启动器默认读取 `.env` 的 `GATEWAY_HOST` 与 `GATEWAY_PORT`；仅在临时覆盖时
@@ -174,22 +182,25 @@ SMOKE_PROVIDER=faux uv run python scripts/smoke_flow.py
 
 ## 6. 数据、迁移、备份与恢复
 
-业务表位于 PostgreSQL 的 `platform` schema：用户、Provider bindings、Profiles、Workspaces、Sessions、Runs、Chat messages 与 Runtime instances。迁移由 `gateway/migrations/` 的 Alembic 版本控制；不要用 `Base.metadata.create_all()` 替代迁移。
+业务表位于 PostgreSQL 的 `platform` 和 `rag` schema。迁移由 `gateway/migrations/` 的 Alembic 版本控制，Gateway 启动时自动升级；不要在业务代码中临时创建表。
 
 备份必须覆盖：
 
 1. PostgreSQL 数据库和 `postgres-data` 卷；密文 Binding 必须有对应 `ENCRYPTION_KEY` 才能解密。
-2. `.runtime-data/tenants/`；其中有用户 workspace、Pi session 文件和 JSONL 轨迹。
-3. 由密钥管理系统保护的 `ENCRYPTION_KEY`、JWT secret、Runtime shared secret。
-4. Runtime 镜像归档、SHA-256 校验文件及对应源代码/锁文件。
+2. Redis 的 `docker/volumes/redis/` AOF；它只包含可重建的处理中间缓存，但恢复后可避免重复模型调用。
+3. `.runtime-data/tenants/`；其中有用户 workspace、Pi session 文件和 JSONL 轨迹。
+4. 由密钥管理系统保护的 `ENCRYPTION_KEY`、JWT secret、Runtime shared secret 和 Redis 密码。
+5. Runtime 镜像归档、SHA-256 校验文件及对应源代码/锁文件。
 
-恢复顺序：恢复数据库和密钥材料 → 校验/导入 Runtime 镜像 → 恢复租户目录 → 启动 PostgreSQL 和 Gateway。Gateway 会把未完成 Run 标为 `interrupted`；这不等于自动恢复未完成推理。容器重建后内存中的活动 Pi 会话也不可视作已恢复，应作为现场验收项目。
+恢复顺序：恢复数据库和密钥材料 → 恢复 Redis AOF → 校验/导入 Runtime 镜像 → 恢复租户目录 → 启动 PostgreSQL、Redis、Gateway 和 RAG Worker。Gateway 会把未完成 Run 标为 `interrupted`；RAG Worker 会在 lease 到期后恢复异常中断的文档任务。容器重建后内存中的活动 Pi 会话不可视作已恢复，应作为现场验收项目。
 
 ## 7. 运维、观察与故障处理
 
 | 情况                    | 观察方式                                      | 处理方向                                                |
 | ----------------------- | --------------------------------------------- | ------------------------------------------------------- |
 | Gateway 无法启动        | Uvicorn 日志、`platform` 迁移状态           | 检查数据库、迁移、Docker socket、源目录、镜像和网络。   |
+| RAG Worker 无法启动     | Worker 日志、`rag` 迁移状态、Redis `PING`   | 检查 pgvector、Redis ACL、模型地址和队列 lease。        |
+| RAG 文档处理失败        | 文档三阶段状态、错误字段、`processing_jobs` | 修复模型/文件问题后重新提交；有效 chunk 缓存会被复用。  |
 | `runtime_unavailable` | `GET /api/v1/runtime`、Docker daemon 日志   | 检查镜像、Docker 权限/daemon、Runtime 网络和健康检查。  |
 | `runtime_busy`        | Session/Run 记录、SSE                         | 等 Run 完成或先`abort`，再 stop/recreate。            |
 | 模型调用失败            | SSE`message.failed`、Gateway/Runtime 日志   | 核对 Binding、Provider 凭据、出网/DNS、模型 ID、资源。  |
@@ -202,8 +213,12 @@ SMOKE_PROVIDER=faux uv run python scripts/smoke_flow.py
 
 | 项目                              | 当前证据                                                                                                  | 结论             |
 | --------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------- |
-| API 路由、请求体、SSE 事件        | 核对`gateway/app/api/v1/` 与 Gateway Runtime 客户端；本机`/openapi.json` 返回 28 个公开方法             | 路由本机已核对   |
-| 启动/迁移顺序                     | 核对`gateway/app/main.py`、Alembic/模型；在既有本机 PostgreSQL 执行升级至`0006_workspaces_lifecycle` | 本机已通过       |
+| API 路由、请求体、SSE 事件        | 2026-09-11 静态生成 OpenAPI：43 个路径，其中 21 个 RAG 路径                                            | 路由本机已核对   |
+| RAG 模型与迁移定义                | 2026-09-12 在现有 PostgreSQL 18.4 安装 pgvector 0.8.2，升级到 `0007_rag_domain` 并确认 12 张 `rag` 表     | 本机已通过       |
+| RAG 单元与既有单元回归            | RAG 15 项、其余既有 unit 12 项通过；一个历史挂起用例单独排除；Ruff、compileall 与锁文件检查通过           | RAG 回归通过     |
+| Redis ACL、AOF 与缓存操作         | `redis:7.4-alpine` 已启动；admin `PING=PONG`、default 用户拒绝；缓存写读/续期/复制/删除通过              | 本机已通过       |
+| 完整 RAG HTTP 链路                | 本地兼容模型实测五类文档、三队列、两类故障续跑、三种检索、图谱合并、深复制、重向量化、租户隔离和删除    | 本机已通过       |
+| 真实外部模型 Provider             | 本次未使用用户的真实 OpenAI/Anthropic 凭据                                                              | 待受控环境验收   |
 | Gateway 启动与基本 HTTP 可用性    | Uvicorn 成功监听`127.0.0.1:21995`；`GET /openapi.json` 成功                                              | 本机已通过       |
 | Docker 限制、网络、挂载           | 核对`runtime_locator.py`、Dockerfile、环境模板                                                           | 静态已核对       |
 | 镜像构建/离线导入                 | 核对`docs/runtime-image.md`                                                                               | 静态已核对       |

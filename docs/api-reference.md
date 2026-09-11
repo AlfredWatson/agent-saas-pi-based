@@ -343,7 +343,16 @@ curl -N -X POST "http://127.0.0.1:8000/api/v1/sessions/$SESSION_ID/messages:stre
 
 与 `steer` 相同的路径格式和请求体，但调用 Pi 的 follow-up 语义。成功 `202`；未运行时为 `409 session_not_running`。
 
-## 8. 通用错误与兼容性
+## 8. 多租户 RAG
+
+RAG 资源位于 `/workspaces/{workspace_id}/knowledge-bases`，完整契约和调用顺序见
+[`docs/rag.md`](rag.md)。主要接口包括知识库 CRUD/复制、模型验证配置、批量文档上传、
+三类处理任务、向量/混合/图谱检索、图谱合并及维护 operation 查询。
+
+所有 RAG 子资源都会同时验证当前用户、Workspace 与知识库。文档阶段状态可通过
+文档列表/详情读取，队列进度可通过知识库的 `/jobs` 读取。模型 API key 只写不读。
+
+## 9. 通用错误与兼容性
 
 FastAPI 字段校验失败为 `422`，响应含 `detail` 数组；Gateway 自己显式产生的业务错误通常为 `{"detail":"<machine_code>"}`。当前 Gateway 未统一转换所有 Runtime HTTP 异常，因此上游目录/内部校验失败也可能表现为 `5xx`；客户端不应依赖该类失败的精确状态码，应记录机器码并以退避策略重试。
 

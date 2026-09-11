@@ -1,22 +1,25 @@
-from contextlib import asynccontextmanager
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
+
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from .api.v1 import auth, profiles, providers, runtime, sessions, workspaces
+from .api.v1 import auth, profiles, providers, rag, runtime, sessions, workspaces
 from .clients.agent_runtime import RuntimeClient
 from .core.config import get_settings
 from .db.session import engine
+from .rag.cache import RagCache
 from .services.runtime_locator import RuntimeUnavailableError
 
 # Uvicorn configures this logger at INFO by default; application-module loggers
 # otherwise inherit the root WARNING level and their startup messages are hidden.
 logger = logging.getLogger("uvicorn.error")
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -36,9 +39,19 @@ async def lifespan(_: FastAPI):
     async with engine.begin() as connection:
         await connection.execute(text("CREATE SCHEMA IF NOT EXISTS platform"))
         # Old prototype databases may have a lingering running run after a crash.
-        await connection.execute(text("UPDATE platform.agent_runs SET status = 'interrupted', finished_at = now() WHERE status = 'running'"))
+        await connection.execute(
+            text(
+                "UPDATE platform.agent_runs SET status = 'interrupted', finished_at = now() WHERE status = 'running'"
+            )
+        )
+    cache = RagCache()
+    try:
+        await cache.ping()
+    finally:
+        await cache.close()
     await RuntimeClient().health()
     yield
+
 
 app = FastAPI(title="Pi SaaS Gateway", lifespan=lifespan)
 
@@ -48,5 +61,13 @@ async def runtime_unavailable(_: Request, __: RuntimeUnavailableError) -> JSONRe
     return JSONResponse(status_code=503, content={"detail": "runtime_unavailable"})
 
 
-for route in (auth.router, providers.router, profiles.router, workspaces.router, runtime.router, sessions.router):
+for route in (
+    auth.router,
+    providers.router,
+    profiles.router,
+    workspaces.router,
+    rag.router,
+    runtime.router,
+    sessions.router,
+):
     app.include_router(route, prefix="/api/v1")
