@@ -8,7 +8,7 @@ from getpass import getpass
 
 import httpx
 
-BASE_URL = os.getenv("GATEWAY_URL", "http://127.0.0.1:28297").rstrip("/")
+BASE_URL = os.getenv("GATEWAY_URL", "http://127.0.0.1:21995").rstrip("/")
 
 
 def show(step: str, response: httpx.Response) -> dict:
