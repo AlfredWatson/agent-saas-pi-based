@@ -1,10 +1,14 @@
 # Pi SaaS Platform 部署报告
 
-> 报告日期：2026-08-03
+> 报告日期：2026-09-11
 >
-> 依据：当前仓库的 Gateway、Runtime、Docker、Alembic、配置与测试脚本源码。
+> 依据：当前仓库的 Gateway、Runtime、Docker、Alembic、配置与测试脚本源码，以及
+> 2026-09-10 在本机既有 PostgreSQL 上执行的迁移与 Gateway 启动验证。
 >
-> 验证等级：**静态核对**。本次未启动 PostgreSQL、Uvicorn、Docker Runtime 或真实 Provider；本文不将部署写成已在当前主机完成的事实。
+> 验证等级：**源码核对 + 局部本机验收**。已验证 PostgreSQL 连接、Alembic 升级至
+> `0006_workspaces_lifecycle (head)`，并启动 Gateway、成功请求其 OpenAPI；未启动
+> Docker Runtime、未执行 Faux SSE、真实 Provider、会话恢复或生产运维验收。本文不将
+> 未执行项目写成已在当前主机完成的事实。
 
 ## 1. 结论
 
@@ -110,12 +114,15 @@ docker image inspect pi-saas-agent-runtime:0.82.1-dev --format '{{.Os}}/{{.Archi
 
 ### 4.3 启动 PostgreSQL
 
-先在 `.env` 中设置 `POSTGRES_PASSWORD`：
+先在仓库根目录 `.env` 中设置 `POSTGRES_PASSWORD`：
 
 ```bash
-docker compose -f infra/compose.dev.yml up -d
-docker compose -f infra/compose.dev.yml ps
+docker compose --env-file .env -f infra/compose.dev.yml up -d
+docker compose --env-file .env -f infra/compose.dev.yml ps
 ```
+
+`compose.dev.yml` 位于 `infra/`，因此必须显式指定仓库根目录的 `.env`；否则
+Compose 不会取得 `POSTGRES_PASSWORD`，并会在配置解析阶段失败。
 
 该 Compose 只启动 PostgreSQL；Gateway 在宿主机运行。当前开发配置将 5432 映射到宿主机所有接口，生产建议移除此映射或用私网/防火墙限制到仅 Gateway 可达。
 
@@ -189,15 +196,16 @@ SMOKE_PROVIDER=faux uv run python scripts/smoke_flow.py
 
 ## 8. 当前验证证据与上线门禁
 
-| 项目                                     | 当前证据                                              | 结论           |
-| ---------------------------------------- | ----------------------------------------------------- | -------------- |
-| API 路由、请求体、SSE 事件               | 核对`gateway/app/api/v1/` 与 Gateway Runtime 客户端 | 静态已核对     |
-| 启动/迁移顺序                            | 核对`gateway/app/main.py`、Alembic/模型             | 静态已核对     |
-| Docker 限制、网络、挂载                  | 核对`runtime_locator.py`、Dockerfile、环境模板      | 静态已核对     |
-| 镜像构建/离线导入                        | 核对`docs/runtime-image.md`                         | 静态已核对     |
-| PostgreSQL + Uvicorn + Docker + Faux SSE | 本次未启动服务                                        | 待现场验收     |
-| 真实 Provider 与`verified_at`          | 本次未使用真实凭据                                    | 待受控环境验收 |
-| Runtime 重建后的会话继续                 | 脚本支持可选检查，本次未执行                          | 待现场验收     |
-| TLS、反向代理、备份恢复、告警            | 仓库未提供生产编排/监控配置                           | 目标环境补齐   |
+| 项目                              | 当前证据                                                                                                  | 结论             |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------- |
+| API 路由、请求体、SSE 事件        | 核对`gateway/app/api/v1/` 与 Gateway Runtime 客户端；本机`/openapi.json` 返回 28 个公开方法             | 路由本机已核对   |
+| 启动/迁移顺序                     | 核对`gateway/app/main.py`、Alembic/模型；在既有本机 PostgreSQL 执行升级至`0006_workspaces_lifecycle` | 本机已通过       |
+| Gateway 启动与基本 HTTP 可用性    | Uvicorn 成功监听`127.0.0.1:21995`；`GET /openapi.json` 成功                                              | 本机已通过       |
+| Docker 限制、网络、挂载           | 核对`runtime_locator.py`、Dockerfile、环境模板                                                           | 静态已核对       |
+| 镜像构建/离线导入                 | 核对`docs/runtime-image.md`                                                                               | 静态已核对       |
+| Docker Runtime 生命周期与 Faux SSE | 本次未创建用户 Runtime，未运行 Faux 全流程                                                               | 待现场验收       |
+| 真实 Provider 与`verified_at`   | 本次未使用真实凭据                                                                                        | 待受控环境验收   |
+| Runtime 重建后的会话继续          | 脚本支持可选检查，本次未执行                                                                              | 待现场验收       |
+| TLS、反向代理、备份恢复、告警     | 仓库未提供生产编排/监控配置                                                                               | 目标环境补齐     |
 
 建议将以下全部作为正式上线门禁：Faux smoke 通过、镜像架构匹配、迁移成功、Runtime 生命周期、SSE 断线持续执行、备份恢复演练、TLS/反向代理和密钥轮换。完成后，应将本报告的“待现场验收”替换为带日期、环境和证据的实测结论。
