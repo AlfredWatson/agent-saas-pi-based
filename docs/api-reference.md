@@ -348,8 +348,8 @@ curl -N -X POST "http://127.0.0.1:8000/api/v1/sessions/$SESSION_ID/messages:stre
 > **四阶段 pipeline 版本。** 本节中旧的知识库级 `document_backend`、
 > `chunking_strategy` 与 `chunking_config` 已废弃。当前可执行的 RAG 请求契约以
 > [`rag.md`](rag.md) 为准：创建知识库需提交五个 PostgreSQL 后端；上传返回逐文件
-> 结果；必须先提交 `/jobs/parsing`，再为每个文档设置 chunking 配置并提交
-> `/jobs/chunking`。完整 OpenAPI 可由运行中的 `/openapi.json` 获取。
+> 结果；parsing 和 chunking 是两个独立任务，文档级 chunking 配置必须在 chunking
+> 入队前确定。完整 OpenAPI 可由运行中的 `/openapi.json` 获取。
 
 RAG 是独立于 Agent Runtime 的知识库服务。所有知识库均属于一个 Workspace，所有下列
 资源查询都会同时校验当前用户、`workspace_id` 与 `knowledge_base_id`；不能跨知识库检索
@@ -358,8 +358,8 @@ RAG 是独立于 Agent Runtime 的知识库服务。所有知识库均属于一�
 RAG 文档上传使用 `multipart/form-data`；其余写接口使用 JSON。除另有说明外，业务错误为
 `{"detail":"<machine_code>"}`，找不到或不属于当前用户的资源返回 `404`。
 
-建议调用顺序：创建知识库 → 上传文档 → 提交 parsing → 设置文档级 chunking 配置 → 提交
-chunking → 设置并验证模型 → 提交向量化和/或图谱提取 → 轮询文档或任务 → 检索/合并图谱。
+建议调用顺序：创建知识库 → 上传文档 → 设置文档级 chunking 配置（可选）→ 提交 parsing →
+提交 chunking → 设置并验证模型 → 提交向量化和/或图谱提取 → 轮询文档或任务 → 检索/合并图谱。
 RAG 不提供回答生成接口，检索结果供后续应用消费。
 
 ### 8.1 能力发现
@@ -448,8 +448,8 @@ Workspace 名称重复返回 `409 knowledge_base_exists`。
 | `regex` | `max_token_size`、`re_expression` | `512`、段落/中英文句末正则 |
 | `semantic` | `max_token_size`、`breakpoint_threshold` | `512`、`95` |
 
-`max_token_size` 最小为 32；fixed 的 overlap 必须小于 token 上限；semantic 的阈值在
-`0..100` 之间。该配置只作用于当前文档，任务会保存快照。语义切分在提交任务前必须已有
+`max_token_size` 最小为 32；fixed 的 overlap 必须小于 token 上限；semantic 的阈值必须在
+`(0, 100)` 之间。该配置只作用于当前文档，任务会保存快照。语义切分在提交任务前必须已有
 已验证的 embedding 模型。无效参数返回 `422 invalid_chunking_config`。
 
 ### `POST /workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/copy`
@@ -527,17 +527,21 @@ curl -X POST "$BASE/workspaces/$WORKSPACE_ID/knowledge-bases/$KB_ID/documents" \
 语法合法的批量请求返回 `200`，并按文件报告 `uploaded` 或 `failed`。文件失败不会回滚其他
 合法文件；只有文件数量非法才返回 `422 invalid_upload_file_count`。
 
-上传结果包含 `uploaded`、`failed` 和逐文件 `items`；成功项含文档对象。文档对象包含原始名、
-安全持久化名、唯一 storage key 和四段独立处理状态：
+上传结果包含 `uploaded`、`failed` 和逐文件 `items`；成功项含文档对象。上传不会创建任务、
+解析数据或 Redis 缓存，因此四个阶段在成功上传后均为 `not_started`。文档对象包含原始名、
+安全持久化名、唯一 storage key、当前文档的 parser/chunking 配置和四段独立处理状态：
 
 ```json
 {
   "id":"<document-uuid>","original_filename":"guide.pdf","stored_filename":"<user>_<date>_guide.pdf",
   "storage_backend":"postgresql","storage_key":"<unique-key>","content_type":"application/pdf",
   "extension":".pdf","sha256":"<hex>","size_bytes":1234,"status":"active",
+  "parsing_backend":null,
+  "chunking_strategy":"fixed",
+  "chunking_config":{"max_token_size":512,"overlap_token_size":64,"split_by_character":"\n\n"},
   "stages":{
-    "parsing":{"status":"succeeded","progress":100,"message":"completed","error":null,"updated_at":"..."},
-    "chunking":{"status":"succeeded","progress":100,"message":"completed","error":null,"updated_at":"..."},
+    "parsing":{"status":"not_started","progress":0,"message":null,"error":null,"updated_at":"..."},
+    "chunking":{"status":"not_started","progress":0,"message":null,"error":null,"updated_at":"..."},
     "vectorization":{"status":"not_started","progress":0,"message":null,"error":null,"updated_at":"..."},
     "graph":{"status":"not_started","progress":0,"message":null,"error":null,"updated_at":"..."}
   },"created_at":"...","updated_at":"..."
@@ -546,6 +550,10 @@ curl -X POST "$BASE/workspaces/$WORKSPACE_ID/knowledge-bases/$KB_ID/documents" \
 
 阶段 `status` 为 `not_started`、`queued`、`running`、`succeeded` 或 `failed`。`progress` 与
 `message` 会随 worker 更新，失败原因写入 `error`。
+
+失败项不含 `document`，而是包含 `error_code`、`message` 和 `retryable`，例如
+`document_too_large`、`empty_document` 或 `unsupported_document_type:<extension>`。前两类可修正后
+重传；不支持的扩展名不可由重试解决。
 
 ### `GET .../{knowledge_base_id}/documents`
 
@@ -557,8 +565,10 @@ curl -X POST "$BASE/workspaces/$WORKSPACE_ID/knowledge-bases/$KB_ID/documents" \
 
 ### `PUT .../{knowledge_base_id}/documents/{document_id}/chunking-config`
 
-设置该文档后续 chunking 使用的策略和参数。chunking 已 queued、running 或 succeeded 时返回
-`409 document_chunking_config_locked`；删除 chunks 后可重新设置。
+设置该文档后续 chunking 使用的策略和参数。可以在上传后、parsing 前或 parsing 成功后调用；
+chunking 已 queued、running 或 succeeded 时返回 `409 document_chunking_config_locked`；删除 chunks
+后可重新设置。省略 `config` 时使用当前 env 默认值，提供的 `config` 与该策略的默认值合并；未知字段
+或无效正则表达式返回 `422 invalid_chunking_config`。
 
 ```json
 {
@@ -611,9 +621,10 @@ parsing 使用按文档指定处理后端的请求体：
 | `POST .../{knowledge_base_id}/jobs/vectorization` | chunking 成功、已验证 embedding | 同上 |
 | `POST .../{knowledge_base_id}/jobs/graph-extraction` | chunking 成功、已验证 LLM | 同上 |
 
-已 `queued`、`running` 或 `succeeded` 的同阶段文档不能重复提交；对应处理失败后可重新提交，
-worker 会复用 Redis 中已完成 chunk 的中间结果并刷新 TTL。向量化和图谱提取只在全部 chunk
-成功后，才以单一事务写入其最终数据，因此检索不会看到部分完成的结果。
+已 `queued`、`running` 或 `succeeded` 的同阶段文档不能重复提交；对应处理失败后可重新提交。
+parsing/chunking 不使用缓存，失败时不发布 partial blocks/chunks。向量化和图谱提取会复用 Redis
+中已完成 chunk 的中间结果并刷新 TTL，且只在全部 chunk 成功后才以单一事务写入最终数据；检索
+不会看到部分完成的向量或图谱。
 
 缺少前置条件时，常见错误为 `409 document_not_chunked`、`409 embedding_model_required`、
 `409 llm_model_required` 或 `409 document_<stage>_already_processed`。

@@ -27,9 +27,15 @@ uv run python scripts/start_rag_worker.py
 ## 四阶段流程
 
 ```text
-创建知识库 → 上传文件 → parsing → 设置文档级 chunking 配置 → chunking
-            → vectorization 和/或 graph extraction → retrieve
+创建知识库 → 上传文件 → （设置文档级 chunking 配置）→ parsing → chunking
+                                                    └─→ vectorization
+                                                    └─→ graph extraction
+                                                           → retrieve / merge graphs
 ```
+
+上传只写入文件和文档元数据；四个阶段的初始状态都是 `not_started`。文档级
+chunking 配置可在上传后任何时候设置，但必须早于 chunking 任务进入 `queued` 状态。
+实际提交 chunking 仍以 parsing 成功且已产生 blocks 为前置条件。
 
 创建知识库必须显式指定五项后端：
 
@@ -54,9 +60,16 @@ uv run python scripts/start_rag_worker.py
 {"items":[{"document_id":"<uuid>","processor_backend":"default"}]}
 ```
 
-完成 parsing 后，使用 `PUT .../documents/{document_id}/chunking-config` 设置当前文档的策略和参数，再提交 chunking。语义切分需要已验证 embedding；vectorization 和 graph extraction 分别需要 chunking 成功加 embedding/LLM 配置。
+使用 `PUT .../documents/{document_id}/chunking-config` 设置当前文档的策略和参数；未设置时使用上传时从 env 复制的 fixed 默认参数。语义切分需要已验证 embedding；vectorization 和 graph extraction 分别需要 chunking 成功加 embedding/LLM 配置。
 
-parsing 和 chunking 都不会缓存，也不会暴露部分 blocks/chunks：只有整个阶段成功后才在数据库中发布。向量化和图谱提取继续使用 Redis 完成失败续跑，并在全部 chunk 完成后原子写入最终存储。
+| 阶段 | 输入 | 失败与重试 | 最终数据可见性 |
+| --- | --- | --- | --- |
+| parsing | PostgreSQL 文件对象、文档指定的处理后端 | 不使用缓存；失败不保留 partial blocks。删除 `/blocks` 后可重新解析。 | 全部解析成功且至少一个有效 block 时一次性发布。 |
+| chunking | 已持久化 blocks、文档策略快照 | 不使用缓存；失败不保留 partial chunks。删除 `/chunks` 后可重新切分。 | 全部切分成功时一次性发布。 |
+| vectorization | chunks、已验证 embedding | Redis 按 chunk 保存已完成向量；重试只补缺失项并刷新 TTL。 | 所有 chunk 完成后单事务写入 vectors。 |
+| graph extraction | chunks、已验证 LLM | Redis 按 chunk 保存已抽取的节点和边；重试只补缺失项并刷新 TTL。 | 所有 chunk 完成后单事务写入图谱及证据。 |
+
+因此 parsing/chunking 的失败不会留下可查询的中间数据；向量和图谱任务失败时缓存仅用于恢复，检索也看不到部分最终数据。
 
 ## 清理与复制
 
@@ -65,9 +78,38 @@ parsing 和 chunking 都不会缓存，也不会暴露部分 blocks/chunks：只
 - 删除文档会同时清理文件适配器内容、派生数据、合并图谱依赖和 Redis key。
 - 复制知识库会复制文件、四阶段状态、文档配置、blocks、chunks、vectors、图谱、任务和有效的向量/图谱缓存；运行中任务仍会阻止复制。
 
-完整 HTTP 验收：
+## HTTP 调用要点
+
+所有 RAG 路由在 `/api/v1` 下，并要求登录后的 `Authorization: Bearer <token>`。推荐由
+`GET /api/v1/rag/capabilities` 取得当前支持的后端、文件扩展名和默认切分参数，再创建知识库。
+处理提交返回 `202 {"job_ids":[...]}`；轮询 `GET .../jobs` 或文档详情中的 `stages`，不要把
+提交成功视为处理完成。
+
+典型清理边界：删除 `/vectors` 只允许重新向量化；删除 `/graph` 只允许重新抽取图谱；删除
+`/chunks` 会同时删除向量和图谱；删除 `/blocks` 会继续删除 chunks 及全部下游数据。任一相关
+任务处于 `queued` 或 `running` 时，派生数据删除会返回 `409 document_processing`。
+
+## Smoke 验收
+
+先在三个终端分别启动 Redis、模型 mock、Gateway 和 worker。Gateway 必须由启动脚本读取 `.env`
+中的 `GATEWAY_HOST` 与 `GATEWAY_PORT`；例如当前配置端口为 `21995` 时：
 
 ```bash
+# terminal 1
+docker compose --env-file .env -f infra/compose.dev.yml up -d redis
+
+# terminal 2
 uv run python scripts/rag_mock_model.py
-uv run python scripts/rag_smoke_flow.py
+
+# terminal 3 and 4
+uv run python scripts/start_gateway.py
+uv run python scripts/start_rag_worker.py
+
+# terminal 5: use the value configured in .env, rather than the script's fallback URL
+RAG_SMOKE_GATEWAY=http://127.0.0.1:21995/api/v1 \
+  uv run python scripts/rag_smoke_flow.py
 ```
+
+该 smoke 会创建隔离测试用户和知识库，覆盖五种文件、四阶段、向量/图谱缓存续跑、三种检索、
+图谱合并、知识库复制和级联删除；脚本结束时会清理其创建的测试数据。生产或共享环境应使用
+独立测试数据库和 Redis DB。
