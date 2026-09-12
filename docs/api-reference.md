@@ -1,6 +1,6 @@
 # Pi SaaS Platform API 文档
 
-> 版本：基于当前仓库源码整理，日期：2026-09-11。
+> 版本：基于当前仓库源码整理，日期：2026-09-12。
 >
 > 公共 API 根路径：`http(s)://<gateway-host>/api/v1`。本文描述 FastAPI Gateway 的对外契约；`/internal/v1/*` 是 Gateway 与 Runtime 的内部协议，不能经公网或客户端直接调用。
 
@@ -345,12 +345,347 @@ curl -N -X POST "http://127.0.0.1:8000/api/v1/sessions/$SESSION_ID/messages:stre
 
 ## 8. 多租户 RAG
 
-RAG 资源位于 `/workspaces/{workspace_id}/knowledge-bases`，完整契约和调用顺序见
-[`docs/rag.md`](rag.md)。主要接口包括知识库 CRUD/复制、模型验证配置、批量文档上传、
-三类处理任务、向量/混合/图谱检索、图谱合并及维护 operation 查询。
+RAG 是独立于 Agent Runtime 的知识库服务。所有知识库均属于一个 Workspace，所有下列
+资源查询都会同时校验当前用户、`workspace_id` 与 `knowledge_base_id`；不能跨知识库检索
+或合并图谱。完整数据处理与部署说明见 [`rag.md`](rag.md)。
 
-所有 RAG 子资源都会同时验证当前用户、Workspace 与知识库。文档阶段状态可通过
-文档列表/详情读取，队列进度可通过知识库的 `/jobs` 读取。模型 API key 只写不读。
+RAG 文档上传使用 `multipart/form-data`；其余写接口使用 JSON。除另有说明外，业务错误为
+`{"detail":"<machine_code>"}`，找不到或不属于当前用户的资源返回 `404`。
+
+建议调用顺序：创建知识库 → 上传文档 → 设置并验证模型 → 提交 chunking → 提交向量化和/或
+图谱提取 → 轮询文档或任务 → 检索/合并图谱。RAG 不提供回答生成接口，检索结果供后续应用消费。
+
+### 8.1 能力发现
+
+### `GET /rag/capabilities`
+
+返回当前部署实际启用的处理和存储后端、可上传扩展名及各切分策略的默认配置。应先调用此接口，
+再将后端选择展示给用户。本期仅返回内置文档处理与 PostgreSQL 向量/图谱存储。
+
+```json
+{
+  "document_backends":["default"],
+  "vector_backends":["postgresql"],
+  "graph_backends":["postgresql"],
+  "document_extensions":[".doc",".docx",".md",".markdown",".pdf",".ppt",".pptx",".xls",".xlsx"],
+  "chunking_strategies":{
+    "fixed":{"max_token_size":512,"overlap_token_size":64,"split_by_character":"\\n\\n"},
+    "regex":{"max_token_size":512,"re_expression":"\\n{2,}|(?<=[。！？.!?])\\s+"},
+    "semantic":{"max_token_size":512,"breakpoint_threshold":95}
+  }
+}
+```
+
+### 8.2 知识库
+
+以下响应中的知识库对象形如：
+
+```json
+{
+  "id":"<knowledge-base-uuid>","workspace_id":"<workspace-uuid>",
+  "name":"product-docs","status":"active","version":1,
+  "document_backend":"default","vector_backend":"postgresql","graph_backend":"postgresql",
+  "chunking_strategy":"fixed",
+  "chunking_config":{"max_token_size":512,"overlap_token_size":64,"split_by_character":"\n\n"},
+  "concurrency":{"chunking":2,"embedding":2,"graph":1}
+}
+```
+
+### `POST /workspaces/{workspace_id}/knowledge-bases`
+
+创建知识库，成功返回 `201` 和知识库对象。
+
+```json
+{
+  "name":"product-docs",
+  "document_backend":"default",
+  "vector_backend":"postgresql",
+  "graph_backend":"postgresql"
+}
+```
+
+三个后端字段可省略并使用默认值；只能取 capabilities 中的值，创建后不可更改。同一
+Workspace 名称重复返回 `409 knowledge_base_exists`。
+
+### `GET /workspaces/{workspace_id}/knowledge-bases`
+
+返回 `{"items":[<知识库对象>, ...]}`。
+
+### `GET /workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}`
+
+返回一个知识库对象。
+
+### `PATCH /workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}`
+
+可修改名称、后续任务使用的切分策略/参数和三类并发上限；后端类型不在可修改范围内。
+
+```json
+{
+  "name":"product-docs-v2",
+  "chunking_strategy":"fixed",
+  "chunking_config":{"max_token_size":512,"overlap_token_size":64,"split_by_character":"\n\n"},
+  "chunking_concurrency":2,
+  "embedding_concurrency":2,
+  "graph_concurrency":1
+}
+```
+
+字段均可选。支持的 `chunking_strategy` 为：
+
+| 策略 | 参数 | 默认值 |
+| --- | --- | --- |
+| `fixed` | `max_token_size`、`overlap_token_size`、`split_by_character` | `512`、`64`、`"\n\n"` |
+| `regex` | `max_token_size`、`re_expression` | `512`、段落/中英文句末正则 |
+| `semantic` | `max_token_size`、`breakpoint_threshold` | `512`、`95` |
+
+`max_token_size` 最小为 32；fixed 的 overlap 必须小于 token 上限；semantic 的阈值在
+`0..100` 之间。策略变更不重写既有 chunks，每个新任务保存自己的策略快照。语义切分在提交
+任务前必须已有已验证的 embedding 模型。无效参数返回 `422 invalid_chunking_config`。
+
+### `POST /workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/copy`
+
+异步复制完整知识库，成功返回 `202`：
+
+```json
+{"name":"product-docs-copy"}
+```
+
+```json
+{"operation_id":"<operation-uuid>","target_knowledge_base_id":"<uuid>","status":"queued"}
+```
+
+副本继承文档、blocks、chunks、向量、图谱、任务记录、配置和仍有效的中间缓存，且不能选择
+不同后端。源知识库有 running 文档任务时返回 `409 knowledge_base_processing`。
+
+### `DELETE /workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}`
+
+异步删除知识库，立即返回 `202 {"operation_id":"<uuid>","status":"queued"}`。服务会先取消
+排队/执行中的任务，再删除数据库数据及 Redis 缓存；完成前知识库状态为 `deleting`。
+
+### 8.3 模型配置
+
+模型配置仅作用于当前知识库，API key 只写入、AES-GCM 加密保存，任何读取接口都不返回明文。
+所有设置请求均会实际调用模型验证，验证失败不会保存配置。生产环境仅接受 HTTPS base URL；
+本地/私网 URL 仅能在显式开发开关开启时使用。
+
+本节至 8.7 中的 `.../{knowledge_base_id}/...` 均以前缀
+`/workspaces/{workspace_id}/knowledge-bases` 开始。
+
+### `PUT .../{knowledge_base_id}/embedding-model`
+
+仅支持 OpenAI-compatible embedding 服务，服务端会验证向量非空且为有限数值，并记录维度和
+配置指纹。
+
+```json
+{
+  "protocol":"openai",
+  "base_url":"https://embedding.example.com/v1",
+  "api_key":"<secret>",
+  "model_name":"text-embedding-3-small",
+  "thinking_effort":null
+}
+```
+
+成功返回脱敏后的配置对象（含 `embedding_dimension`、`fingerprint`、`verified_at`，不含
+`api_key`）。已有持久向量时返回 `409 embedding_model_locked_by_vectors`；存在 queued/running
+向量任务时返回 `409 embedding_jobs_active`，存在语义切分任务时返回
+`409 semantic_chunking_jobs_active`。先删除该库所有文档的 vectors 才能重新设置。
+
+### `PUT .../{knowledge_base_id}/llm-model`
+
+请求结构同 embedding 配置，但 `protocol` 可为 `openai` 或 `anthropic`。服务端将验证基础调用及
+图谱结构化输出能力。已有历史图谱不阻止改模型；queued/running 图谱任务会返回
+`409 llm_jobs_active`。旧图谱保留创建时模型的配置指纹。
+
+### `GET .../{knowledge_base_id}/models`
+
+返回当前知识库的 embedding/LLM 配置列表，响应绝不包含 API key。
+
+### 8.4 文档与处理状态
+
+### `POST .../{knowledge_base_id}/documents`
+
+批量上传。请求为 `multipart/form-data`，用同名字段重复传入文件：
+
+```bash
+curl -X POST "$BASE/workspaces/$WORKSPACE_ID/knowledge-bases/$KB_ID/documents" \
+  -H "Authorization: Bearer $TOKEN" \
+  -F 'files=@guide.pdf' -F 'files=@notes.md'
+```
+
+支持 PDF、Word、Excel、PPT 与 Markdown（扩展名见 capabilities）。批次先整体校验，任一文件
+不合法则不会写入该批次。成功返回 `201 {"items":[<文档对象>, ...]}`；常见错误为
+`415 unsupported_document_type:<ext>`、`422 empty_document:<name>`、`413 document_too_large:<name>`
+和 `422 invalid_upload_file_count`。
+
+文档对象包含原文件信息和三段独立处理状态：
+
+```json
+{
+  "id":"<document-uuid>","filename":"guide.pdf","content_type":"application/pdf",
+  "extension":".pdf","sha256":"<hex>","size_bytes":1234,"status":"active",
+  "stages":{
+    "chunking":{"status":"succeeded","progress":100,"message":"completed","error":null,"updated_at":"..."},
+    "vectorization":{"status":"not_started","progress":0,"message":null,"error":null,"updated_at":"..."},
+    "graph":{"status":"not_started","progress":0,"message":null,"error":null,"updated_at":"..."}
+  },"created_at":"...","updated_at":"..."
+}
+```
+
+阶段 `status` 为 `not_started`、`queued`、`running`、`succeeded` 或 `failed`。`progress` 与
+`message` 会随 worker 更新，失败原因写入 `error`。
+
+### `GET .../{knowledge_base_id}/documents`
+
+返回 `{"items":[<文档对象>, ...]}`。
+
+### `GET .../{knowledge_base_id}/documents/{document_id}`
+
+返回一个文档对象。
+
+### `DELETE .../{knowledge_base_id}/documents/{document_id}`
+
+删除原文档及其 blocks、chunks、向量、文档图谱、关联合并图谱和缓存，成功 `204`。
+
+### `DELETE .../{knowledge_base_id}/documents/{document_id}/chunks`
+
+删除 chunks 及全部派生 vectors/graphs/cache，并重置相关阶段，成功 `204`。这也是允许重新
+chunking 的方式。
+
+### `DELETE .../{knowledge_base_id}/documents/{document_id}/vectors`
+
+仅删除向量和向量缓存、重置向量阶段，成功 `204`；可随后重新向量化。
+
+### `DELETE .../{knowledge_base_id}/documents/{document_id}/graph`
+
+仅删除文档图谱、依赖它的合并图谱和图谱缓存、重置图谱阶段，成功 `204`；可随后重新提取。
+
+任一对应阶段有运行中任务时，以上派生数据删除接口返回 `409 document_processing`。
+
+### 8.5 文档处理队列
+
+三个提交接口请求体相同，`document_ids` 为 1–100 个不重复 UUID：
+
+```json
+{"document_ids":["<document-uuid>","<document-uuid>"]}
+```
+
+| 接口 | 前置条件 | 成功响应 |
+| --- | --- | --- |
+| `POST .../{knowledge_base_id}/jobs/chunking` | 文档阶段尚未完成；语义策略还需已验证 embedding | `202 {"job_ids":["<uuid>"]}` |
+| `POST .../{knowledge_base_id}/jobs/vectorization` | chunking 成功、已验证 embedding | 同上 |
+| `POST .../{knowledge_base_id}/jobs/graph-extraction` | chunking 成功、已验证 LLM | 同上 |
+
+已 `queued`、`running` 或 `succeeded` 的同阶段文档不能重复提交；对应处理失败后可重新提交，
+worker 会复用 Redis 中已完成 chunk 的中间结果并刷新 TTL。向量化和图谱提取只在全部 chunk
+成功后，才以单一事务写入其最终数据，因此检索不会看到部分完成的结果。
+
+缺少前置条件时，常见错误为 `409 document_not_chunked`、`409 embedding_model_required`、
+`409 llm_model_required` 或 `409 document_<stage>_already_processed`。
+
+### `GET .../{knowledge_base_id}/jobs`
+
+列出该知识库处理任务：
+
+```json
+{"items":[{
+  "id":"<job-uuid>","document_id":"<uuid>","kind":"vectorization","status":"running",
+  "attempt":2,"progress":{"current":3,"total":10},"message":"embedding chunk 3/10","error":null
+}]}
+```
+
+`kind` 为 `chunking`、`vectorization` 或 `graph_extraction`。客户端可同时轮询该接口和文档
+详情，以获取队列状态与用户可见的阶段状态。
+
+### 8.6 检索
+
+### `POST .../{knowledge_base_id}/retrieve`
+
+只在当前知识库内检索；`document_ids` 可进一步过滤，但包含其他知识库文档会返回
+`422 document_filter_outside_knowledge_base`。不会生成自然语言答案。
+
+```json
+{
+  "query":"如何配置服务？",
+  "mode":"hybrid",
+  "document_ids":["<optional-document-uuid>"],
+  "top_k":5,
+  "vector_k":20,
+  "bm25_k":20,
+  "vector_weight":1.0,
+  "bm25_weight":1.0,
+  "rrf_k":60,
+  "min_score":null
+}
+```
+
+| `mode` | 参数 | 返回 |
+| --- | --- | --- |
+| `vector` | `top_k`、`candidate_k`、`min_score`、`document_ids` | 排序后的 chunks：`chunk_id`、`document_id`、`text`、`metadata`、`score`、`source:"vector"` |
+| `hybrid` | `vector_k`、`bm25_k`、两路 `*_weight`、`rrf_k`、`top_k` | 向量/BM25 候选经带权 RRF 融合后的 chunks，`source:"hybrid"` |
+| `graph` | `top_entities`、`max_hops`、`top_k`、`document_ids` | `nodes`、`edges` 与带 document/chunk 来源的 `evidence` |
+
+`top_k` 为 1–100，候选数为 1–500，`max_hops` 为 0–3。vector/hybrid 需有 embedding
+配置，否则返回 `409 embedding_model_required`。
+
+### 8.7 图谱
+
+### `GET .../{knowledge_base_id}/graphs`
+
+返回图谱 artifact 列表：
+
+```json
+{"items":[{"id":"<graph-uuid>","name":"guide.pdf","kind":"document",
+"source_document_id":"<uuid>","source_graph_ids":[],"status":"ready"}]}
+```
+
+`kind` 为 `document` 或 `merged`。文档图谱由 `graph-extraction` 任务生成。
+
+### `GET .../{knowledge_base_id}/graphs/{graph_id}`
+
+返回图谱详情：
+
+```json
+{"id":"<uuid>","name":"merged-guide","kind":"merged",
+"nodes":[{"id":"<uuid>","name":"服务","entity_type":"component","description":"...","properties":{}}],
+"edges":[{"id":"<uuid>","source_node_id":"<uuid>","relation":"depends_on","target_node_id":"<uuid>","description":"...","properties":{}}]}
+```
+
+### `POST .../{knowledge_base_id}/graphs:merge`
+
+合并 2–100 个已就绪、同一知识库的图谱，源图谱保留。成功 `201`：
+
+```json
+{"name":"merged-guide","graph_ids":["<graph-uuid>","<graph-uuid>"]}
+```
+
+```json
+{"id":"<merged-graph-uuid>","name":"merged-guide","kind":"merged","source_graph_ids":["<uuid>","<uuid>"]}
+```
+
+合并以 Unicode NFKC、case-fold、空白/标点规范化后的 `(entity_type, name)` 对齐实体；属性冲突
+保留多值和所有来源，边按 `(source, relation, target)` 去重并合并证据。非本知识库或未就绪的
+图谱返回 `422 graph_outside_knowledge_base`。
+
+### `DELETE .../{knowledge_base_id}/graphs/{graph_id}`
+
+删除图谱 artifact，成功 `204`。删除文档图谱会重置源文档图谱阶段，并删除所有依赖它的合并图谱。
+
+### 8.8 维护 operation
+
+### `GET /rag/operations/{operation_id}`
+
+查询知识库复制或删除的异步操作；只允许创建该 operation 的当前用户读取。
+
+```json
+{
+  "id":"<operation-uuid>","kind":"copy","status":"running","attempt":1,
+  "message":"copying chunks","error":null,"payload":{}
+}
+```
+
+`kind` 为 `copy` 或 `delete`；`status` 会随 worker 推进。找不到或非本人操作返回
+`404 operation_not_found`。
 
 ## 9. 通用错误与兼容性
 
