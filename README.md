@@ -27,7 +27,7 @@ and owns active Pi SDK sessions and JSONL history.
    `--port`, the Gateway listens on `GATEWAY_HOST` and `GATEWAY_PORT` from
    `.env`.
 6. In a separate process run `uv run python scripts/start_rag_worker.py` for
-   document parsing, chunking, embedding and graph extraction jobs.
+   four RAG jobs: parsing, chunking, embedding and graph extraction.
 
 The RAG API is scoped below each Workspace and is independent from the Agent
 Runtime. See [Multi-tenant RAG](docs/rag.md) for lifecycle and API examples.

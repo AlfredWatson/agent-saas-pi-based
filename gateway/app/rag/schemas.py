@@ -26,15 +26,16 @@ class GraphExtraction(BaseModel):
 
 class KnowledgeBaseCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    document_backend: Literal["default"] = "default"
-    vector_backend: Literal["postgresql"] = "postgresql"
-    graph_backend: Literal["postgresql"] = "postgresql"
+    file_backend: Literal["postgresql"]
+    block_backend: Literal["postgresql"]
+    chunk_backend: Literal["postgresql"]
+    vector_backend: Literal["postgresql"]
+    graph_backend: Literal["postgresql"]
 
 
 class KnowledgeBaseUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
-    chunking_strategy: Literal["fixed", "regex", "semantic"] | None = None
-    chunking_config: dict[str, object] | None = None
+    parsing_concurrency: int | None = Field(default=None, ge=1)
     chunking_concurrency: int | None = Field(default=None, ge=1)
     embedding_concurrency: int | None = Field(default=None, ge=1)
     graph_concurrency: int | None = Field(default=None, ge=1)
@@ -54,6 +55,20 @@ class ModelConfigInput(BaseModel):
 
 class JobSubmit(BaseModel):
     document_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class ParsingJobItem(BaseModel):
+    document_id: UUID
+    processor_backend: str | None = Field(default=None, min_length=1, max_length=32)
+
+
+class ParsingJobSubmit(BaseModel):
+    items: list[ParsingJobItem] = Field(min_length=1, max_length=100)
+
+
+class ChunkingConfigInput(BaseModel):
+    strategy: Literal["fixed", "regex", "semantic"]
+    config: dict[str, object] | None = None
 
 
 class GraphMergeInput(BaseModel):

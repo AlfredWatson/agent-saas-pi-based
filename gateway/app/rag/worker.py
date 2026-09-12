@@ -16,6 +16,7 @@ from ..core.encryption import encrypt
 from ..db.session import SessionLocal
 from .cache import RagCache
 from .chunking import content_hash, split_documents, token_count
+from .file_storage import get_file_storage
 from .graph_store import get_graph_store
 from .model_clients import chat_client, embedding_client, input_from_stored
 from .models import (
@@ -34,10 +35,12 @@ from .models import (
 )
 from .processors import get_document_processor
 from .schemas import GraphExtraction
+from .startup import verify_rag_database
 from .vector_store import PostgresVectorStore
 
 logger = logging.getLogger("uvicorn.error")
 STAGE_FIELD = {
+    "parsing": "parsing",
     "chunking": "chunking",
     "vectorization": "vectorization",
     "graph_extraction": "graph",
@@ -53,7 +56,8 @@ class RagWorker:
         self.cache = RagCache()
         self.tasks: set[asyncio.Task] = set()
         self.maximum_tasks = (
-            self.settings.rag_max_chunking_concurrency
+            self.settings.rag_max_parsing_concurrency
+            + self.settings.rag_max_chunking_concurrency
             + self.settings.rag_max_embedding_concurrency
             + self.settings.rag_max_graph_concurrency
         )
@@ -65,17 +69,22 @@ class RagWorker:
 
     async def run_forever(self) -> None:
         logger.info("RAG worker %s started", self.worker_id)
+        await verify_rag_database()
         await self.cache.ping()
         while True:
             self.tasks = {task for task in self.tasks if not task.done()}
             claimed = False
             if len(self.tasks) < self.maximum_tasks:
                 operation_id = await self.claim_operation()
-                if operation_id:
+                if operation_id and len(self.tasks) < self.maximum_tasks:
                     self._start(self.process_operation(operation_id))
                     claimed = True
-                job_id = await self.claim_job()
-                if job_id and len(self.tasks) < self.maximum_tasks:
+                job_id = (
+                    await self.claim_job()
+                    if len(self.tasks) < self.maximum_tasks
+                    else None
+                )
+                if job_id:
                     self._start(self.process_job(job_id))
                     claimed = True
             if not claimed:
@@ -122,6 +131,7 @@ class RagWorker:
             )
             for job in candidates:
                 global_limit = {
+                    "parsing": self.settings.rag_max_parsing_concurrency,
                     "chunking": self.settings.rag_max_chunking_concurrency,
                     "vectorization": self.settings.rag_max_embedding_concurrency,
                     "graph_extraction": self.settings.rag_max_graph_concurrency,
@@ -145,6 +155,7 @@ class RagWorker:
                     continue
                 kb = await db.get(KnowledgeBase, job.knowledge_base_id)
                 limit = {
+                    "parsing": kb.parsing_concurrency,
                     "chunking": kb.chunking_concurrency,
                     "vectorization": kb.embedding_concurrency,
                     "graph_extraction": kb.graph_concurrency,
@@ -321,7 +332,9 @@ class RagWorker:
                         or job.leased_by != self.worker_id
                     ):
                         return
-                    if job.kind == "chunking":
+                    if job.kind == "parsing":
+                        await self.process_parsing(db, job)
+                    elif job.kind == "chunking":
                         await self.process_chunking(db, job)
                     elif job.kind == "vectorization":
                         await self.process_vectorization(db, job)
@@ -383,6 +396,44 @@ class RagWorker:
             raise RuntimeError(f"{kind}_model_configuration_changed")
         return config
 
+    async def process_parsing(self, db: AsyncSession, job: ProcessingJob) -> None:
+        document = await db.get(RagDocument, job.document_id)
+        if document is None:
+            raise RuntimeError("document_unavailable")
+        generation = int(job.config_snapshot["generation"])
+        if document.processing_generation != generation:
+            raise RuntimeError("document_generation_changed")
+        if await db.scalar(
+            select(DocumentBlock.id)
+            .where(DocumentBlock.document_id == document.id)
+            .limit(1)
+        ):
+            raise RuntimeError("document_blocks_already_exist")
+        backend = str(job.config_snapshot["processor_backend"])
+        content = await get_file_storage(document.storage_backend, db).read(document)
+        parsed = await asyncio.to_thread(
+            get_document_processor(backend).parse,
+            document.stored_filename,
+            content,
+        )
+        if not parsed:
+            raise RuntimeError("document_contains_no_extractable_text")
+        await self._assert_job_active(db, job, lock=True)
+        # Publish all parsed blocks together.  A parser failure leaves no
+        # user-visible partial result and parsing never uses Redis.
+        for ordinal, item in enumerate(parsed):
+            db.add(
+                DocumentBlock(
+                    document_id=document.id,
+                    ordinal=ordinal,
+                    text=item.page_content,
+                    metadata_=item.metadata,
+                    content_hash=content_hash(item.page_content),
+                )
+            )
+        job.progress_current = job.progress_total = len(parsed)
+        job.message = f"parsed {len(parsed)} blocks"
+
     async def process_chunking(self, db: AsyncSession, job: ProcessingJob) -> None:
         document = await db.get(RagDocument, job.document_id)
         kb = await db.get(KnowledgeBase, job.knowledge_base_id)
@@ -400,33 +451,7 @@ class RagWorker:
             ).all()
         )
         if not blocks:
-            parsed = await asyncio.to_thread(
-                get_document_processor(kb.document_backend).parse,
-                document.filename,
-                document.content,
-            )
-            if not parsed:
-                raise RuntimeError("document_contains_no_extractable_text")
-            for ordinal, item in enumerate(parsed):
-                db.add(
-                    DocumentBlock(
-                        document_id=document.id,
-                        ordinal=ordinal,
-                        text=item.page_content,
-                        metadata_=item.metadata,
-                        content_hash=content_hash(item.page_content),
-                    )
-                )
-            await db.commit()
-            blocks = list(
-                (
-                    await db.scalars(
-                        select(DocumentBlock)
-                        .where(DocumentBlock.document_id == document.id)
-                        .order_by(DocumentBlock.ordinal)
-                    )
-                ).all()
-            )
+            raise RuntimeError("document_has_no_blocks")
         langchain_docs = [
             Document(
                 page_content=block.text,
@@ -447,42 +472,40 @@ class RagWorker:
             langchain_docs,
             embeddings,
         )
-        existing = {
-            chunk.ordinal
-            for chunk in (
-                await db.scalars(
-                    select(Chunk).where(
-                        Chunk.document_id == document.id, Chunk.generation == generation
-                    )
-                )
-            ).all()
-        }
+        if not pieces:
+            raise RuntimeError("document_has_no_chunks")
+        existing = await db.scalar(
+            select(Chunk.id)
+            .where(Chunk.document_id == document.id, Chunk.generation == generation)
+            .limit(1)
+        )
+        if existing:
+            raise RuntimeError("document_chunks_already_exist")
         block_map = {str(block.id): block for block in blocks}
         total = len(pieces)
         job.progress_total = total
         for ordinal, piece in enumerate(pieces):
-            if ordinal not in existing:
-                block = block_map[piece.metadata.pop("_block_id")]
-                db.add(
-                    Chunk(
-                        knowledge_base_id=kb.id,
-                        document_id=document.id,
-                        block_id=block.id,
-                        generation=generation,
-                        ordinal=ordinal,
-                        text=piece.page_content,
-                        token_count=token_count(piece.page_content),
-                        content_hash=content_hash(piece.page_content),
-                        metadata_=piece.metadata,
-                        strategy_snapshot={
-                            "strategy": snapshot["strategy"],
-                            **snapshot["config"],
-                        },
-                    )
+            block = block_map[piece.metadata.pop("_block_id")]
+            db.add(
+                Chunk(
+                    knowledge_base_id=kb.id,
+                    document_id=document.id,
+                    block_id=block.id,
+                    generation=generation,
+                    ordinal=ordinal,
+                    text=piece.page_content,
+                    token_count=token_count(piece.page_content),
+                    content_hash=content_hash(piece.page_content),
+                    metadata_=piece.metadata,
+                    strategy_snapshot={
+                        "strategy": snapshot["strategy"],
+                        **snapshot["config"],
+                    },
                 )
-            await self._progress(
-                db, job, ordinal + 1, total, f"chunked {ordinal + 1}/{total}"
             )
+        await self._assert_job_active(db, job, lock=True)
+        job.progress_current = total
+        job.message = f"chunked {total}/{total}"
 
     async def process_vectorization(self, db: AsyncSession, job: ProcessingJob) -> None:
         document = await db.get(RagDocument, job.document_id)
@@ -709,14 +732,24 @@ class RagWorker:
         ).all():
             copied = RagDocument(
                 knowledge_base_id=target.id,
-                filename=document.filename,
+                original_filename=document.original_filename,
+                stored_filename=document.stored_filename,
                 content_type=document.content_type,
                 extension=document.extension,
                 sha256=document.sha256,
                 size_bytes=document.size_bytes,
-                content=document.content,
+                storage_backend=document.storage_backend,
+                storage_key=uuid4().hex,
                 status=document.status,
                 processing_generation=document.processing_generation,
+                parsing_backend=document.parsing_backend,
+                parsing_status=document.parsing_status,
+                parsing_progress=document.parsing_progress,
+                parsing_message=document.parsing_message,
+                parsing_error=document.parsing_error,
+                parsing_updated_at=document.parsing_updated_at,
+                chunking_strategy=document.chunking_strategy,
+                chunking_config=document.chunking_config,
                 chunking_status=document.chunking_status,
                 chunking_progress=document.chunking_progress,
                 chunking_message=document.chunking_message,
@@ -735,6 +768,7 @@ class RagWorker:
             )
             db.add(copied)
             await db.flush()
+            await get_file_storage(document.storage_backend, db).copy(document, copied)
             document_map[document.id] = copied
         block_map: dict[UUID, DocumentBlock] = {}
         source_document_ids = set(document_map)
@@ -925,11 +959,12 @@ class RagWorker:
         )
         documents = (
             await db.scalars(
-                select(RagDocument.id).where(RagDocument.knowledge_base_id == kb.id)
+                select(RagDocument).where(RagDocument.knowledge_base_id == kb.id)
             )
         ).all()
-        for document_id in documents:
-            await self.cache.delete_document(kb.id, document_id)
+        for document in documents:
+            await self.cache.delete_document(kb.id, document.id)
+            await get_file_storage(document.storage_backend, db).delete(document)
         await db.delete(kb)
         await db.commit()
 

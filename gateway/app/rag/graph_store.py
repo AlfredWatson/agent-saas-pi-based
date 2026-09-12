@@ -49,7 +49,7 @@ class PostgresGraphStore:
             knowledge_base_id=self.knowledge_base_id,
             source_document_id=document.id,
             kind="document",
-            name=document.filename,
+            name=document.original_filename,
             model_fingerprint=model.fingerprint,
         )
         self.db.add(artifact)

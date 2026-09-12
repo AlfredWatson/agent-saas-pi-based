@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     workspace_max_per_user: int | None = Field(default=None, ge=1)
     workspace_storage_limit_mb: int = Field(default=1024, ge=1)
     workspace_file_max_mb: int = Field(default=100, ge=1)
+    file_base: str = "p"
     document_processing_service: str = "default"
     vector_base: str = "p"
     graph_base: str = "p"
@@ -48,10 +49,12 @@ class Settings(BaseSettings):
     rag_job_lease_seconds: int = Field(default=120, ge=30)
     rag_worker_poll_seconds: float = Field(default=1.0, gt=0, le=60)
     rag_operation_max_attempts: int = Field(default=3, ge=1, le=20)
+    rag_default_parsing_concurrency: int = Field(default=2, ge=1)
     rag_default_chunking_concurrency: int = Field(default=2, ge=1)
     rag_default_embedding_concurrency: int = Field(default=2, ge=1)
     rag_default_graph_concurrency: int = Field(default=1, ge=1)
     rag_max_chunking_concurrency: int = Field(default=8, ge=1)
+    rag_max_parsing_concurrency: int = Field(default=8, ge=1)
     rag_max_embedding_concurrency: int = Field(default=8, ge=1)
     rag_max_graph_concurrency: int = Field(default=4, ge=1)
     rag_document_max_mb: int = Field(default=100, ge=1)
@@ -110,6 +113,8 @@ class Settings(BaseSettings):
             raise ValueError(
                 "DOCUMENT_PROCESSING_SERVICE currently supports only 'default'"
             )
+        if self.file_base != "p":
+            raise ValueError("FILE_BASE currently supports only 'p' (postgresql)")
         if self.vector_base != "p":
             raise ValueError("VECTOR_BASE currently supports only 'p' (postgresql)")
         if self.graph_base != "p":
@@ -119,6 +124,11 @@ class Settings(BaseSettings):
                 "CHUNK_OVERLAP_TOKEN_SIZE must be smaller than CHUNK_MAX_TOKEN_SIZE"
             )
         for default_value, maximum, label in (
+            (
+                self.rag_default_parsing_concurrency,
+                self.rag_max_parsing_concurrency,
+                "parsing",
+            ),
             (
                 self.rag_default_chunking_concurrency,
                 self.rag_max_chunking_concurrency,

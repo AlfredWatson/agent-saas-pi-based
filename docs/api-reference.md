@@ -345,6 +345,12 @@ curl -N -X POST "http://127.0.0.1:8000/api/v1/sessions/$SESSION_ID/messages:stre
 
 ## 8. 多租户 RAG
 
+> **四阶段 pipeline 版本。** 本节中旧的知识库级 `document_backend`、
+> `chunking_strategy` 与 `chunking_config` 已废弃。当前可执行的 RAG 请求契约以
+> [`rag.md`](rag.md) 为准：创建知识库需提交五个 PostgreSQL 后端；上传返回逐文件
+> 结果；必须先提交 `/jobs/parsing`，再为每个文档设置 chunking 配置并提交
+> `/jobs/chunking`。完整 OpenAPI 可由运行中的 `/openapi.json` 获取。
+
 RAG 是独立于 Agent Runtime 的知识库服务。所有知识库均属于一个 Workspace，所有下列
 资源查询都会同时校验当前用户、`workspace_id` 与 `knowledge_base_id`；不能跨知识库检索
 或合并图谱。完整数据处理与部署说明见 [`rag.md`](rag.md)。
@@ -352,8 +358,9 @@ RAG 是独立于 Agent Runtime 的知识库服务。所有知识库均属于一�
 RAG 文档上传使用 `multipart/form-data`；其余写接口使用 JSON。除另有说明外，业务错误为
 `{"detail":"<machine_code>"}`，找不到或不属于当前用户的资源返回 `404`。
 
-建议调用顺序：创建知识库 → 上传文档 → 设置并验证模型 → 提交 chunking → 提交向量化和/或
-图谱提取 → 轮询文档或任务 → 检索/合并图谱。RAG 不提供回答生成接口，检索结果供后续应用消费。
+建议调用顺序：创建知识库 → 上传文档 → 提交 parsing → 设置文档级 chunking 配置 → 提交
+chunking → 设置并验证模型 → 提交向量化和/或图谱提取 → 轮询文档或任务 → 检索/合并图谱。
+RAG 不提供回答生成接口，检索结果供后续应用消费。
 
 ### 8.1 能力发现
 
@@ -364,7 +371,10 @@ RAG 文档上传使用 `multipart/form-data`；其余写接口使用 JSON。除�
 
 ```json
 {
-  "document_backends":["default"],
+  "file_backends":["postgresql"],
+  "block_backends":["postgresql"],
+  "chunk_backends":["postgresql"],
+  "document_processing_backends":["default"],
   "vector_backends":["postgresql"],
   "graph_backends":["postgresql"],
   "document_extensions":[".doc",".docx",".md",".markdown",".pdf",".ppt",".pptx",".xls",".xlsx"],
@@ -384,10 +394,9 @@ RAG 文档上传使用 `multipart/form-data`；其余写接口使用 JSON。除�
 {
   "id":"<knowledge-base-uuid>","workspace_id":"<workspace-uuid>",
   "name":"product-docs","status":"active","version":1,
-  "document_backend":"default","vector_backend":"postgresql","graph_backend":"postgresql",
-  "chunking_strategy":"fixed",
-  "chunking_config":{"max_token_size":512,"overlap_token_size":64,"split_by_character":"\n\n"},
-  "concurrency":{"chunking":2,"embedding":2,"graph":1}
+  "file_backend":"postgresql","block_backend":"postgresql","chunk_backend":"postgresql",
+  "vector_backend":"postgresql","graph_backend":"postgresql",
+  "concurrency":{"parsing":2,"chunking":2,"embedding":2,"graph":1}
 }
 ```
 
@@ -398,13 +407,15 @@ RAG 文档上传使用 `multipart/form-data`；其余写接口使用 JSON。除�
 ```json
 {
   "name":"product-docs",
-  "document_backend":"default",
+  "file_backend":"postgresql",
+  "block_backend":"postgresql",
+  "chunk_backend":"postgresql",
   "vector_backend":"postgresql",
   "graph_backend":"postgresql"
 }
 ```
 
-三个后端字段可省略并使用默认值；只能取 capabilities 中的值，创建后不可更改。同一
+五个后端字段必须显式提供；只能取 capabilities 中的值，创建后不可更改。同一
 Workspace 名称重复返回 `409 knowledge_base_exists`。
 
 ### `GET /workspaces/{workspace_id}/knowledge-bases`
@@ -417,20 +428,19 @@ Workspace 名称重复返回 `409 knowledge_base_exists`。
 
 ### `PATCH /workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}`
 
-可修改名称、后续任务使用的切分策略/参数和三类并发上限；后端类型不在可修改范围内。
+可修改名称和四类并发上限；后端类型、解析后端和切分策略不在知识库修改范围内。
 
 ```json
 {
   "name":"product-docs-v2",
-  "chunking_strategy":"fixed",
-  "chunking_config":{"max_token_size":512,"overlap_token_size":64,"split_by_character":"\n\n"},
+  "parsing_concurrency":2,
   "chunking_concurrency":2,
   "embedding_concurrency":2,
   "graph_concurrency":1
 }
 ```
 
-字段均可选。支持的 `chunking_strategy` 为：
+字段均可选。文档级 chunking 配置使用 `PUT .../documents/{document_id}/chunking-config`：
 
 | 策略 | 参数 | 默认值 |
 | --- | --- | --- |
@@ -439,8 +449,8 @@ Workspace 名称重复返回 `409 knowledge_base_exists`。
 | `semantic` | `max_token_size`、`breakpoint_threshold` | `512`、`95` |
 
 `max_token_size` 最小为 32；fixed 的 overlap 必须小于 token 上限；semantic 的阈值在
-`0..100` 之间。策略变更不重写既有 chunks，每个新任务保存自己的策略快照。语义切分在提交
-任务前必须已有已验证的 embedding 模型。无效参数返回 `422 invalid_chunking_config`。
+`0..100` 之间。该配置只作用于当前文档，任务会保存快照。语义切分在提交任务前必须已有
+已验证的 embedding 模型。无效参数返回 `422 invalid_chunking_config`。
 
 ### `POST /workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/copy`
 
@@ -513,18 +523,20 @@ curl -X POST "$BASE/workspaces/$WORKSPACE_ID/knowledge-bases/$KB_ID/documents" \
   -F 'files=@guide.pdf' -F 'files=@notes.md'
 ```
 
-支持 PDF、Word、Excel、PPT 与 Markdown（扩展名见 capabilities）。批次先整体校验，任一文件
-不合法则不会写入该批次。成功返回 `201 {"items":[<文档对象>, ...]}`；常见错误为
-`415 unsupported_document_type:<ext>`、`422 empty_document:<name>`、`413 document_too_large:<name>`
-和 `422 invalid_upload_file_count`。
+支持 PDF、Word、Excel、PPT 与 Markdown（扩展名见 capabilities）。每个文件独立校验；
+语法合法的批量请求返回 `200`，并按文件报告 `uploaded` 或 `failed`。文件失败不会回滚其他
+合法文件；只有文件数量非法才返回 `422 invalid_upload_file_count`。
 
-文档对象包含原文件信息和三段独立处理状态：
+上传结果包含 `uploaded`、`failed` 和逐文件 `items`；成功项含文档对象。文档对象包含原始名、
+安全持久化名、唯一 storage key 和四段独立处理状态：
 
 ```json
 {
-  "id":"<document-uuid>","filename":"guide.pdf","content_type":"application/pdf",
+  "id":"<document-uuid>","original_filename":"guide.pdf","stored_filename":"<user>_<date>_guide.pdf",
+  "storage_backend":"postgresql","storage_key":"<unique-key>","content_type":"application/pdf",
   "extension":".pdf","sha256":"<hex>","size_bytes":1234,"status":"active",
   "stages":{
+    "parsing":{"status":"succeeded","progress":100,"message":"completed","error":null,"updated_at":"..."},
     "chunking":{"status":"succeeded","progress":100,"message":"completed","error":null,"updated_at":"..."},
     "vectorization":{"status":"not_started","progress":0,"message":null,"error":null,"updated_at":"..."},
     "graph":{"status":"not_started","progress":0,"message":null,"error":null,"updated_at":"..."}
@@ -543,6 +555,18 @@ curl -X POST "$BASE/workspaces/$WORKSPACE_ID/knowledge-bases/$KB_ID/documents" \
 
 返回一个文档对象。
 
+### `PUT .../{knowledge_base_id}/documents/{document_id}/chunking-config`
+
+设置该文档后续 chunking 使用的策略和参数。chunking 已 queued、running 或 succeeded 时返回
+`409 document_chunking_config_locked`；删除 chunks 后可重新设置。
+
+```json
+{
+  "strategy":"fixed",
+  "config":{"max_token_size":512,"overlap_token_size":64,"split_by_character":"\n\n"}
+}
+```
+
 ### `DELETE .../{knowledge_base_id}/documents/{document_id}`
 
 删除原文档及其 blocks、chunks、向量、文档图谱、关联合并图谱和缓存，成功 `204`。
@@ -551,6 +575,10 @@ curl -X POST "$BASE/workspaces/$WORKSPACE_ID/knowledge-bases/$KB_ID/documents" \
 
 删除 chunks 及全部派生 vectors/graphs/cache，并重置相关阶段，成功 `204`。这也是允许重新
 chunking 的方式。
+
+### `DELETE .../{knowledge_base_id}/documents/{document_id}/blocks`
+
+删除 blocks 和所有下游 chunks、vectors、图谱及缓存，并将 parsing/chunking 状态重置；之后可重新提交 parsing。
 
 ### `DELETE .../{knowledge_base_id}/documents/{document_id}/vectors`
 
@@ -564,7 +592,13 @@ chunking 的方式。
 
 ### 8.5 文档处理队列
 
-三个提交接口请求体相同，`document_ids` 为 1–100 个不重复 UUID：
+parsing 使用按文档指定处理后端的请求体：
+
+```json
+{"items":[{"document_id":"<uuid>","processor_backend":"default"}]}
+```
+
+其他三个提交接口使用 `document_ids` 为 1–100 个不重复 UUID：
 
 ```json
 {"document_ids":["<document-uuid>","<document-uuid>"]}
@@ -572,7 +606,8 @@ chunking 的方式。
 
 | 接口 | 前置条件 | 成功响应 |
 | --- | --- | --- |
-| `POST .../{knowledge_base_id}/jobs/chunking` | 文档阶段尚未完成；语义策略还需已验证 embedding | `202 {"job_ids":["<uuid>"]}` |
+| `POST .../{knowledge_base_id}/jobs/parsing` | 已上传且无 blocks；每项可选处理后端 | `202 {"job_ids":["<uuid>"]}` |
+| `POST .../{knowledge_base_id}/jobs/chunking` | parsing 成功、blocks 非空；语义策略还需已验证 embedding | 同上 |
 | `POST .../{knowledge_base_id}/jobs/vectorization` | chunking 成功、已验证 embedding | 同上 |
 | `POST .../{knowledge_base_id}/jobs/graph-extraction` | chunking 成功、已验证 LLM | 同上 |
 
@@ -594,7 +629,7 @@ worker 会复用 Redis 中已完成 chunk 的中间结果并刷新 TTL。向量�
 }]}
 ```
 
-`kind` 为 `chunking`、`vectorization` 或 `graph_extraction`。客户端可同时轮询该接口和文档
+`kind` 为 `parsing`、`chunking`、`vectorization` 或 `graph_extraction`。客户端可同时轮询该接口和文档
 详情，以获取队列状态与用户可见的阶段状态。
 
 ### 8.6 检索

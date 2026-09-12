@@ -150,7 +150,7 @@ def poll_documents(
             return selected
         if expected == "succeeded" and "failed" in statuses:
             errors = {
-                row["filename"]: row["stages"][stage]["error"]
+                row["original_filename"]: row["stages"][stage]["error"]
                 for row in selected.values()
                 if row["stages"][stage]["status"] == "failed"
             }
@@ -257,6 +257,9 @@ def main() -> None:
     email = f"rag-smoke-{uuid4().hex[:12]}@example.com"
     password = "correct-horse-battery-staple"
     with httpx.Client(timeout=90, trust_env=False) as client:
+        # A previous interrupted smoke can leave deliberate failure injection
+        # enabled on the shared local model stub.
+        reset_model(client)
         token = require(
             client.post(
                 f"{GATEWAY}/auth/register",
@@ -271,7 +274,14 @@ def main() -> None:
             client.post(
                 f"{GATEWAY}/workspaces/{workspace_id}/knowledge-bases",
                 headers=headers,
-                json={"name": f"rag-smoke-{uuid4().hex[:8]}"},
+                json={
+                    "name": f"rag-smoke-{uuid4().hex[:8]}",
+                    "file_backend": "postgresql",
+                    "block_backend": "postgresql",
+                    "chunk_backend": "postgresql",
+                    "vector_backend": "postgresql",
+                    "graph_backend": "postgresql",
+                },
             )
         )
         kb_id = created["id"]
@@ -281,25 +291,49 @@ def main() -> None:
                 root,
                 headers=headers,
                 json={
-                    "chunking_strategy": "fixed",
-                    "chunking_config": {
-                        "max_token_size": 32,
-                        "overlap_token_size": 4,
-                        "split_by_character": "\n\n",
-                    },
+                    "parsing_concurrency": 2,
                     "chunking_concurrency": 2,
                     "embedding_concurrency": 1,
                     "graph_concurrency": 1,
                 },
             )
         )
-        documents = require(
+        upload = require(
             client.post(f"{root}/documents", headers=headers, files=sample_files())
-        )["items"]
+        )
+        assert upload["uploaded"] == 5 and upload["failed"] == 0
+        documents = [item["document"] for item in upload["items"]]
         assert len(documents) == 5
         document_ids = [item["id"] for item in documents]
         markdown_id = next(
-            item["id"] for item in documents if item["filename"] == "sample.md"
+            item["id"] for item in documents if item["original_filename"] == "sample.md"
+        )
+
+        require(
+            client.post(
+                f"{root}/jobs/parsing",
+                headers=headers,
+                json={
+                    "items": [
+                        {"document_id": document_id, "processor_backend": "default"}
+                        for document_id in document_ids
+                    ]
+                },
+            )
+        )
+        poll_documents(client, headers, root, document_ids, "parsing")
+        require(
+            client.put(
+                f"{root}/documents/{markdown_id}/chunking-config",
+                headers=headers,
+                json={
+                    "strategy": "regex",
+                    "config": {
+                        "max_token_size": 32,
+                        "re_expression": "\\n{2,}|(?<=[。！？.!?])\\s+",
+                    },
+                },
+            )
         )
 
         model_body = {
@@ -509,7 +543,7 @@ def main() -> None:
         asyncio.run(cleanup_users([email, attacker_email]))
 
         print(
-            "PASS: five document types, model validation, three queues, cached resume, "
+            "PASS: five document types, four queues, document-level chunking, cached resume, "
             "vector/hybrid/graph retrieval, graph merge, deep copy, re-vectorization, "
             "tenant isolation, and cascade deletion"
         )

@@ -4,6 +4,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .cache import RagCache
+from .file_storage import get_file_storage
 from .models import KnowledgeBase, ProcessingJob, RagDocument
 
 
@@ -42,17 +43,16 @@ async def delete_workspace_rag_data(
             finished_at=func.now(),
         )
     )
-    rows = (
-        await db.execute(
-            select(RagDocument.knowledge_base_id, RagDocument.id).where(
-                RagDocument.knowledge_base_id.in_(kb_ids)
-            )
+    documents = (
+        await db.scalars(
+            select(RagDocument).where(RagDocument.knowledge_base_id.in_(kb_ids))
         )
     ).all()
     cache = RagCache()
     try:
-        for knowledge_base_id, document_id in rows:
-            await cache.delete_document(knowledge_base_id, document_id)
+        for document in documents:
+            await cache.delete_document(document.knowledge_base_id, document.id)
+            await get_file_storage(document.storage_backend, db).delete(document)
     finally:
         await cache.close()
     await db.execute(delete(KnowledgeBase).where(KnowledgeBase.id.in_(kb_ids)))

@@ -18,7 +18,7 @@
 
 - FastAPI Gateway 启动时执行 Alembic、确保 `platform` schema、把残留 `running` Run 标记为 `interrupted`，并在接受请求前检查 Docker Runtime 前置条件。
 - 开发 Compose 使用 `pgvector/pgvector:pg17` 和 `redis:7.4-alpine`；PostgreSQL 使用具名卷，Redis AOF 挂载到 `docker/volumes/redis/`。
-- RAG Worker 从 PostgreSQL 三类持久队列取任务，Redis 只保存可恢复中间结果。
+- RAG Worker 从 PostgreSQL 四类持久队列（parsing、chunking、vectorization、graph extraction）取任务，Redis 只保存可恢复中间结果。
 - Gateway 使用 Docker API 为每位用户创建只绑定 `127.0.0.1` 的 Runtime；租户数据在 `.runtime-data/tenants/<user-id>`。
 - Runtime 采用只读根文件系统、tmpfs、全 capability drop、`no-new-privileges` 与内存/CPU/PID 限制；源码只读挂载。
 

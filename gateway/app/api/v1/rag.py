@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -16,11 +17,13 @@ from ...core.encryption import encrypt
 from ...db.models import User, Workspace
 from ...db.session import get_db
 from ...rag.cache import RagCache
+from ...rag.file_storage import get_file_storage
 from ...rag.graph import canonical_key, merge_property_maps
 from ...rag.model_clients import model_fingerprint, verify_embedding, verify_llm
 from ...rag.models import (
     Chunk,
     ChunkVector,
+    DocumentBlock,
     GraphArtifact,
     GraphEdge,
     GraphEvidence,
@@ -36,10 +39,12 @@ from ...rag.retrieval import retrieve
 from ...rag.schemas import (
     GraphMergeInput,
     JobSubmit,
+    ChunkingConfigInput,
     KnowledgeBaseCopy,
     KnowledgeBaseCreate,
     KnowledgeBaseUpdate,
     ModelConfigInput,
+    ParsingJobSubmit,
     RetrievalInput,
 )
 
@@ -140,12 +145,13 @@ def render_kb(kb: KnowledgeBase) -> dict:
         "name": kb.name,
         "status": kb.status,
         "version": kb.version,
-        "document_backend": kb.document_backend,
+        "file_backend": kb.file_backend,
+        "block_backend": kb.block_backend,
+        "chunk_backend": kb.chunk_backend,
         "vector_backend": kb.vector_backend,
         "graph_backend": kb.graph_backend,
-        "chunking_strategy": kb.chunking_strategy,
-        "chunking_config": kb.chunking_config,
         "concurrency": {
+            "parsing": kb.parsing_concurrency,
             "chunking": kb.chunking_concurrency,
             "embedding": kb.embedding_concurrency,
             "graph": kb.graph_concurrency,
@@ -165,13 +171,20 @@ def render_document(document: RagDocument) -> dict:
 
     return {
         "id": str(document.id),
-        "filename": document.filename,
+        "original_filename": document.original_filename,
+        "stored_filename": document.stored_filename,
+        "storage_backend": document.storage_backend,
+        "storage_key": document.storage_key,
         "content_type": document.content_type,
         "extension": document.extension,
         "sha256": document.sha256,
         "size_bytes": document.size_bytes,
         "status": document.status,
+        "parsing_backend": document.parsing_backend,
+        "chunking_strategy": document.chunking_strategy,
+        "chunking_config": document.chunking_config,
         "stages": {
+            "parsing": stage("parsing"),
             "chunking": stage("chunking"),
             "vectorization": stage("vectorization"),
             "graph": stage("graph"),
@@ -184,7 +197,10 @@ def render_document(document: RagDocument) -> dict:
 @router.get("/rag/capabilities")
 async def capabilities(_: User = Depends(current_user)):
     return {
-        "document_backends": ["default"],
+        "file_backends": ["postgresql"],
+        "block_backends": ["postgresql"],
+        "chunk_backends": ["postgresql"],
+        "document_processing_backends": ["default"],
         "vector_backends": ["postgresql"],
         "graph_backends": ["postgresql"],
         "document_extensions": sorted(SUPPORTED_EXTENSIONS),
@@ -208,11 +224,12 @@ async def create_knowledge_base(
         user_id=user.id,
         workspace_id=workspace_id,
         name=body.name.strip(),
-        document_backend=body.document_backend,
+        file_backend=body.file_backend,
+        block_backend=body.block_backend,
+        chunk_backend=body.chunk_backend,
         vector_backend=body.vector_backend,
         graph_backend=body.graph_backend,
-        chunking_strategy="fixed",
-        chunking_config=default_chunk_config("fixed"),
+        parsing_concurrency=settings.rag_default_parsing_concurrency,
         chunking_concurrency=settings.rag_default_chunking_concurrency,
         embedding_concurrency=settings.rag_default_embedding_concurrency,
         graph_concurrency=settings.rag_default_graph_concurrency,
@@ -269,6 +286,7 @@ async def update_knowledge_base(
         raise HTTPException(409, "knowledge_base_unavailable")
     settings = get_settings()
     maxima = {
+        "parsing_concurrency": settings.rag_max_parsing_concurrency,
         "chunking_concurrency": settings.rag_max_chunking_concurrency,
         "embedding_concurrency": settings.rag_max_embedding_concurrency,
         "graph_concurrency": settings.rag_max_graph_concurrency,
@@ -277,14 +295,9 @@ async def update_knowledge_base(
     for field, maximum in maxima.items():
         if field in values and values[field] > maximum:
             raise HTTPException(422, f"{field}_exceeds_system_maximum")
-    strategy = values.get("chunking_strategy", kb.chunking_strategy)
-    if "chunking_strategy" in values or "chunking_config" in values:
-        kb.chunking_strategy = strategy
-        kb.chunking_config = validate_chunk_config(
-            strategy, values.get("chunking_config")
-        )
     for field in (
         "name",
+        "parsing_concurrency",
         "chunking_concurrency",
         "embedding_concurrency",
         "graph_concurrency",
@@ -468,9 +481,22 @@ async def list_rag_models(
     }
 
 
+def sanitized_stored_filename(user_id: UUID, raw_filename: str) -> tuple[str, str, str]:
+    """Return client filename, safe persisted filename, and normalized suffix."""
+    original = Path((raw_filename or "unnamed").replace("\\", "/")).name or "unnamed"
+    suffix = Path(original).suffix.lower()
+    stem = Path(original).stem
+    stem = re.sub(r"[^\w.-]+", "_", stem, flags=re.UNICODE)
+    stem = re.sub(r"_+", "_", stem).strip("._") or "unnamed"
+    # Keep persisted names bounded even for a maximal UTF-8 client filename.
+    stem = stem[:512]
+    date = datetime.now(UTC).strftime("%y%m%d")
+    return original, f"{user_id}_{date}_{stem}{suffix}", suffix
+
+
 @router.post(
     "/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/documents",
-    status_code=201,
+    status_code=200,
 )
 async def upload_documents(
     workspace_id: UUID,
@@ -485,32 +511,76 @@ async def upload_documents(
         raise HTTPException(409, "knowledge_base_unavailable")
     if not files or len(files) > settings.rag_upload_max_files:
         raise HTTPException(422, "invalid_upload_file_count")
-    documents: list[RagDocument] = []
+    results: list[dict] = []
     try:
         for file in files:
-            extension = Path(file.filename or "").suffix.lower()
-            if extension not in SUPPORTED_EXTENSIONS:
-                raise HTTPException(
-                    415, f"unsupported_document_type:{extension or 'none'}"
-                )
-            content = await file.read(settings.rag_document_max_mb * 1024 * 1024 + 1)
-            if not content:
-                raise HTTPException(422, f"empty_document:{file.filename}")
-            if len(content) > settings.rag_document_max_mb * 1024 * 1024:
-                raise HTTPException(413, f"document_too_large:{file.filename}")
-            document = RagDocument(
-                knowledge_base_id=kb.id,
-                filename=file.filename or "unnamed",
-                content_type=file.content_type or "application/octet-stream",
-                extension=extension,
-                sha256=hashlib.sha256(content).hexdigest(),
-                size_bytes=len(content),
-                content=content,
+            original, stored, extension = sanitized_stored_filename(
+                user.id, file.filename or "unnamed"
             )
-            db.add(document)
-            documents.append(document)
+            try:
+                if extension not in SUPPORTED_EXTENSIONS:
+                    raise ValueError(f"unsupported_document_type:{extension or 'none'}")
+                content = await file.read(
+                    settings.rag_document_max_mb * 1024 * 1024 + 1
+                )
+                if not content:
+                    raise ValueError("empty_document")
+                if len(content) > settings.rag_document_max_mb * 1024 * 1024:
+                    raise ValueError("document_too_large")
+                document = RagDocument(
+                    knowledge_base_id=kb.id,
+                    original_filename=original,
+                    stored_filename=stored,
+                    content_type=file.content_type or "application/octet-stream",
+                    extension=extension,
+                    sha256=hashlib.sha256(content).hexdigest(),
+                    size_bytes=len(content),
+                    storage_backend=kb.file_backend,
+                    storage_key=uuid4().hex,
+                    chunking_strategy="fixed",
+                    chunking_config=default_chunk_config("fixed"),
+                )
+                db.add(document)
+                await db.flush()
+                await get_file_storage(kb.file_backend, db).put(document, content)
+                results.append(
+                    {
+                        "original_filename": original,
+                        "status": "uploaded",
+                        "document": document,
+                    }
+                )
+            except ValueError as exc:
+                results.append(
+                    {
+                        "original_filename": original,
+                        "status": "failed",
+                        "error_code": str(exc),
+                        "message": str(exc),
+                        "retryable": not str(exc).startswith(
+                            "unsupported_document_type:"
+                        ),
+                    }
+                )
         await db.commit()
-        return {"items": [render_document(item) for item in documents]}
+        for item in results:
+            if item["status"] == "uploaded":
+                await db.refresh(item["document"])
+        return {
+            "uploaded": sum(item["status"] == "uploaded" for item in results),
+            "failed": sum(item["status"] == "failed" for item in results),
+            "items": [
+                {
+                    **item,
+                    **(
+                        {"document": render_document(item["document"])}
+                        if item["status"] == "uploaded"
+                        else {}
+                    ),
+                }
+                for item in results
+            ],
+        }
     except Exception:
         await db.rollback()
         raise
@@ -628,7 +698,9 @@ async def delete_document(
             finished_at=func.now(),
         )
     )
+    await delete_graph_for_document(db, document)
     await remove_document_cache(kb.id, document.id)
+    await get_file_storage(document.storage_backend, db).delete(document)
     await db.delete(document)
     await db.commit()
 
@@ -680,6 +752,68 @@ async def delete_graph_for_document(db: AsyncSession, document: RagDocument) -> 
     document.graph_message = None
     document.graph_error = None
     document.graph_updated_at = func.now()
+
+
+@router.delete(
+    "/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/documents/{document_id}/blocks",
+    status_code=204,
+)
+async def delete_document_blocks(
+    workspace_id: UUID,
+    knowledge_base_id: UUID,
+    document_id: UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    kb = await owned_kb(db, workspace_id, knowledge_base_id, user.id, lock=True)
+    if kb.status != "active":
+        raise HTTPException(409, "knowledge_base_unavailable")
+    document = await owned_document(db, kb.id, document_id, lock=True)
+    await ensure_no_active_document_jobs(
+        db,
+        document.id,
+        ("parsing", "chunking", "vectorization", "graph_extraction"),
+    )
+    await delete_vectors_for_document(db, document)
+    await delete_graph_for_document(db, document)
+    await db.execute(delete(Chunk).where(Chunk.document_id == document.id))
+    await db.execute(
+        delete(DocumentBlock).where(DocumentBlock.document_id == document.id)
+    )
+    document.processing_generation += 1
+    for prefix in ("parsing", "chunking"):
+        setattr(document, f"{prefix}_status", "not_started")
+        setattr(document, f"{prefix}_progress", 0)
+        setattr(document, f"{prefix}_message", None)
+        setattr(document, f"{prefix}_error", None)
+        setattr(document, f"{prefix}_updated_at", func.now())
+    document.parsing_backend = None
+    await remove_document_cache(kb.id, document.id)
+    await db.commit()
+
+
+@router.put(
+    "/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/documents/{document_id}/chunking-config"
+)
+async def set_document_chunking_config(
+    workspace_id: UUID,
+    knowledge_base_id: UUID,
+    document_id: UUID,
+    body: ChunkingConfigInput,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    kb = await owned_kb(db, workspace_id, knowledge_base_id, user.id, lock=True)
+    if kb.status != "active":
+        raise HTTPException(409, "knowledge_base_unavailable")
+    document = await owned_document(db, kb.id, document_id, lock=True)
+    if document.chunking_status in {"queued", "running", "succeeded"}:
+        raise HTTPException(409, "document_chunking_config_locked")
+    document.chunking_strategy = body.strategy
+    document.chunking_config = validate_chunk_config(body.strategy, body.config)
+    await db.commit()
+    await db.refresh(document)
+    return render_document(document)
 
 
 @router.delete(
@@ -782,30 +916,25 @@ async def submit_jobs(
     )
     if len(documents) != len(set(body.document_ids)):
         raise HTTPException(404, "document_not_found")
-    model_kind = (
-        "embedding"
-        if kind == "vectorization"
-        or (kind == "chunking" and kb.chunking_strategy == "semantic")
-        else "llm"
-    )
-    model = None
-    if kind != "chunking" or kb.chunking_strategy == "semantic":
-        model = await db.scalar(
-            select(RagModelConfig).where(
-                RagModelConfig.knowledge_base_id == kb.id,
-                RagModelConfig.kind == model_kind,
-            )
-        )
-        if model is None:
-            raise HTTPException(409, f"{model_kind}_model_required")
     jobs = []
     for document in documents:
         current_status = getattr(document, f"{status_prefix}_status")
         if current_status in {"queued", "running", "succeeded"}:
             raise HTTPException(409, f"document_{status_prefix}_already_processed")
-        if (
-            kind in {"vectorization", "graph_extraction"}
-            and document.chunking_status != "succeeded"
+        if kind == "chunking" and (
+            document.parsing_status != "succeeded"
+            or not await db.scalar(
+                select(DocumentBlock.id)
+                .where(DocumentBlock.document_id == document.id)
+                .limit(1)
+            )
+        ):
+            raise HTTPException(409, "document_not_parsed")
+        if kind in {"vectorization", "graph_extraction"} and (
+            document.chunking_status != "succeeded"
+            or not await db.scalar(
+                select(Chunk.id).where(Chunk.document_id == document.id).limit(1)
+            )
         ):
             raise HTTPException(409, "document_not_chunked")
         snapshot = {
@@ -813,8 +942,24 @@ async def submit_jobs(
             "knowledge_base_version": kb.version,
         }
         if kind == "chunking":
-            snapshot.update(strategy=kb.chunking_strategy, config=kb.chunking_config)
-        if model:
+            snapshot.update(
+                strategy=document.chunking_strategy, config=document.chunking_config
+            )
+        model_kind = (
+            "embedding"
+            if kind == "vectorization"
+            or (kind == "chunking" and document.chunking_strategy == "semantic")
+            else "llm"
+        )
+        if kind != "chunking" or document.chunking_strategy == "semantic":
+            model = await db.scalar(
+                select(RagModelConfig).where(
+                    RagModelConfig.knowledge_base_id == kb.id,
+                    RagModelConfig.kind == model_kind,
+                )
+            )
+            if model is None:
+                raise HTTPException(409, f"{model_kind}_model_required")
             snapshot["model_fingerprint"] = model.fingerprint
         job = await db.scalar(
             select(ProcessingJob)
@@ -852,6 +997,100 @@ async def submit_jobs(
         setattr(document, f"{status_prefix}_message", "queued")
         setattr(document, f"{status_prefix}_error", None)
         setattr(document, f"{status_prefix}_updated_at", func.now())
+        jobs.append(job)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, "processing_job_already_active") from exc
+    return {"job_ids": [str(job.id) for job in jobs]}
+
+
+@router.post(
+    "/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/jobs/parsing",
+    status_code=202,
+)
+async def submit_parsing(
+    workspace_id: UUID,
+    knowledge_base_id: UUID,
+    body: ParsingJobSubmit,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    kb = await owned_kb(db, workspace_id, knowledge_base_id, user.id, lock=True)
+    if kb.status != "active":
+        raise HTTPException(409, "knowledge_base_unavailable")
+    requested = {item.document_id: item.processor_backend for item in body.items}
+    if len(requested) != len(body.items):
+        raise HTTPException(422, "duplicate_document_id")
+    documents = list(
+        (
+            await db.scalars(
+                select(RagDocument)
+                .where(
+                    RagDocument.knowledge_base_id == kb.id,
+                    RagDocument.id.in_(requested),
+                    RagDocument.status == "active",
+                )
+                .with_for_update()
+            )
+        ).all()
+    )
+    if len(documents) != len(requested):
+        raise HTTPException(404, "document_not_found")
+    jobs = []
+    settings = get_settings()
+    for document in documents:
+        if document.parsing_status in {"queued", "running", "succeeded"}:
+            raise HTTPException(409, "document_parsing_already_processed")
+        if await db.scalar(
+            select(DocumentBlock.id)
+            .where(DocumentBlock.document_id == document.id)
+            .limit(1)
+        ):
+            raise HTTPException(409, "document_blocks_already_exist")
+        backend = requested[document.id] or settings.document_processing_service
+        if backend != settings.document_processing_service:
+            raise HTTPException(422, "unsupported_document_processor")
+        snapshot = {
+            "generation": document.processing_generation,
+            "knowledge_base_version": kb.version,
+            "processor_backend": backend,
+        }
+        failed = await db.scalar(
+            select(ProcessingJob)
+            .where(
+                ProcessingJob.document_id == document.id,
+                ProcessingJob.kind == "parsing",
+                ProcessingJob.status == "failed",
+            )
+            .order_by(ProcessingJob.created_at.desc())
+            .limit(1)
+        )
+        if failed is not None and failed.config_snapshot == snapshot:
+            failed.status = "queued"
+            failed.progress_current = failed.progress_total = 0
+            failed.message, failed.error = "queued for retry", None
+            failed.leased_by = failed.lease_expires_at = failed.heartbeat_at = None
+            failed.finished_at = None
+            job = failed
+        else:
+            job = ProcessingJob(
+                knowledge_base_id=kb.id,
+                document_id=document.id,
+                kind="parsing",
+                status="queued",
+                config_snapshot=snapshot,
+                idempotency_key=uuid4().hex,
+                message="queued",
+            )
+            db.add(job)
+        document.parsing_backend = backend
+        document.parsing_status = "queued"
+        document.parsing_progress = 0
+        document.parsing_message = "queued"
+        document.parsing_error = None
+        document.parsing_updated_at = func.now()
         jobs.append(job)
     try:
         await db.commit()
@@ -1273,11 +1512,12 @@ async def copy_knowledge_base(
         name=body.name.strip(),
         status="copying",
         version=source.version,
-        document_backend=source.document_backend,
+        file_backend=source.file_backend,
+        block_backend=source.block_backend,
+        chunk_backend=source.chunk_backend,
         vector_backend=source.vector_backend,
         graph_backend=source.graph_backend,
-        chunking_strategy=source.chunking_strategy,
-        chunking_config=source.chunking_config,
+        parsing_concurrency=source.parsing_concurrency,
         chunking_concurrency=source.chunking_concurrency,
         embedding_concurrency=source.embedding_concurrency,
         graph_concurrency=source.graph_concurrency,

@@ -7,6 +7,9 @@ from app.rag.chunking import split_documents, token_count
 from app.rag.graph import canonical_key, merge_property_maps, reciprocal_rank_fusion
 from app.rag import model_clients
 from app.rag import processors
+from app.api.v1.rag import sanitized_stored_filename
+from app.rag.file_storage import PostgresFileStorage
+from app.rag.models import RagDocument
 from app.rag.processors import DefaultDocumentProcessor, UnsupportedDocumentError
 from docx import Document as WordDocument
 from langchain_core.documents import Document
@@ -129,6 +132,8 @@ def test_graph_normalization_property_merge_and_rrf_are_deterministic():
 
 
 def test_rag_backend_and_concurrency_settings_fail_fast():
+    with pytest.raises(ValueError, match="FILE_BASE"):
+        Settings(file_base="pm")
     with pytest.raises(ValueError, match="VECTOR_BASE"):
         Settings(vector_base="pmc")
     with pytest.raises(ValueError, match="GRAPH_BASE"):
@@ -144,6 +149,36 @@ def test_rag_backend_and_concurrency_settings_fail_fast():
             postgres_password="database-secret",
             redis_password="replace-with-a-long-redis-password",
         )
+
+
+def test_persisted_filename_uses_user_uuid_utc_date_and_safe_stem():
+    from uuid import UUID
+
+    user_id = UUID("12345678-1234-5678-1234-567812345678")
+    original, stored, extension = sanitized_stored_filename(
+        user_id, "../../unsafe name?.PDF"
+    )
+    assert original == "unsafe name?.PDF"
+    assert stored.startswith(f"{user_id}_")
+    assert stored.endswith("unsafe_name.pdf")
+    assert extension == ".pdf"
+
+
+def test_postgres_file_storage_hides_document_bytea_access():
+    source = RagDocument(storage_key="source", storage_backend="postgresql")
+    target = RagDocument(storage_key="target", storage_backend="postgresql")
+    storage = PostgresFileStorage(None)  # type: ignore[arg-type]
+
+    async def scenario():
+        await storage.put(source, b"content")
+        assert await storage.read(source) == b"content"
+        await storage.copy(source, target)
+        assert await storage.read(target) == b"content"
+        await storage.delete(source)
+        with pytest.raises(RuntimeError, match="content_missing"):
+            await storage.read(source)
+
+    asyncio.run(scenario())
 
 
 def test_redis_url_quotes_acl_credentials():

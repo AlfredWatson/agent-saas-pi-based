@@ -14,6 +14,7 @@ from .clients.agent_runtime import RuntimeClient
 from .core.config import get_settings
 from .db.session import engine
 from .rag.cache import RagCache
+from .rag.startup import verify_rag_database
 from .services.runtime_locator import RuntimeUnavailableError
 
 # Uvicorn configures this logger at INFO by default; application-module loggers
@@ -44,6 +45,7 @@ async def lifespan(_: FastAPI):
                 "UPDATE platform.agent_runs SET status = 'interrupted', finished_at = now() WHERE status = 'running'"
             )
         )
+    await verify_rag_database()
     cache = RagCache()
     try:
         await cache.ping()
