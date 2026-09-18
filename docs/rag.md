@@ -1,6 +1,6 @@
 # 多租户 RAG 后端
 
-RAG 是 Gateway 内独立的 Workspace 资源，不进入 `agent-runtime`。每个知识库固定绑定文件、blocks、chunks、向量和图谱后端；本版本五项均为 PostgreSQL。文件原文、blocks、chunks、向量、图谱和任务均位于同一 PostgreSQL 实例的 `rag` schema。Redis 只缓存可恢复的向量和图谱中间结果。
+RAG 是 Gateway 内独立的 Workspace 资源，不进入 `agent-runtime`。每个知识库固定绑定文件、blocks、chunks、向量和图谱后端；本版本五项均为 PostgreSQL。文件原文、blocks、chunks、向量、图谱和任务均位于同一 PostgreSQL 实例的 `rag` schema。Redis 只缓存可恢复的向量和图谱中间结果。内部 Gateway 分层、依赖方向和扩展方式见 [RAG 架构](rag-architecture.md)。
 
 ## 启动
 

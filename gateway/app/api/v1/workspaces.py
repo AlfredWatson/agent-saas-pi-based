@@ -18,7 +18,7 @@ from ...db.models import AgentRun, AgentSession, ChatMessage, User, Workspace
 from ...db.session import get_db
 from ...services.runtime_locator import RuntimeUnavailableError
 from ...services.workspace_storage import workspace_usage_bytes
-from ...rag.lifecycle import delete_workspace_rag_data
+from ...services.rag.lifecycle import delete_workspace_rag_data
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 

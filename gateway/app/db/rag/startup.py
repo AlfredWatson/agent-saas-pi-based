@@ -6,7 +6,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import text
 
-from ..db.session import engine
+from ..session import engine
 
 
 def _migration_head() -> str:

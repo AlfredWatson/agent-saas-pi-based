@@ -3,9 +3,9 @@ from uuid import UUID
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .cache import RagCache
-from .file_storage import get_file_storage
-from .models import KnowledgeBase, ProcessingJob, RagDocument
+from app.db.rag.models import KnowledgeBase, ProcessingJob, RagDocument
+from app.integrations.rag.cache import RagCache
+from app.integrations.rag.file_storage import get_file_storage
 
 
 async def delete_workspace_rag_data(

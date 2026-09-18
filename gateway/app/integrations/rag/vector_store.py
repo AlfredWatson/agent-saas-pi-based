@@ -8,7 +8,7 @@ from langchain_core.vectorstores import VectorStore
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Chunk, ChunkVector
+from app.db.rag.models import Chunk, ChunkVector
 
 
 class PostgresVectorStore(VectorStore):

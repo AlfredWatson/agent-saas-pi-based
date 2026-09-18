@@ -235,6 +235,12 @@ class DefaultDocumentProcessor:
 
 
 def get_document_processor(name: str) -> DocumentProcessor:
-    if name != "default":
-        raise UnsupportedDocumentError(f"unsupported_document_processor:{name}")
-    return DefaultDocumentProcessor()
+    factories: dict[str, type[DefaultDocumentProcessor]] = {
+        "default": DefaultDocumentProcessor,
+    }
+    try:
+        return factories[name]()
+    except KeyError as exc:
+        raise UnsupportedDocumentError(
+            f"unsupported_document_processor:{name}"
+        ) from exc

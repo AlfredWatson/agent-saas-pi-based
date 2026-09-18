@@ -5,7 +5,7 @@ from uuid import UUID
 
 from redis.asyncio import Redis
 
-from ..core.config import get_settings
+from app.core.config import get_settings
 
 
 class RagCache:

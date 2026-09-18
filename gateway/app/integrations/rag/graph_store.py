@@ -6,8 +6,7 @@ from uuid import UUID
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .graph import canonical_key, merge_property_maps
-from .models import (
+from app.db.rag.models import (
     Chunk,
     GraphArtifact,
     GraphEdge,
@@ -16,7 +15,8 @@ from .models import (
     RagDocument,
     RagModelConfig,
 )
-from .schemas import ExtractedNode, GraphExtraction
+from app.domain.rag.graph import canonical_key, merge_property_maps
+from app.domain.rag.schemas import ExtractedNode, GraphExtraction
 
 
 class GraphStorageBackend(Protocol):
@@ -154,6 +154,8 @@ class PostgresGraphStore:
 def get_graph_store(
     backend: str, db: AsyncSession, knowledge_base_id: UUID
 ) -> GraphStorageBackend:
-    if backend != "postgresql":
-        raise ValueError(f"unsupported_graph_backend:{backend}")
-    return PostgresGraphStore(db, knowledge_base_id)
+    factories = {"postgresql": PostgresGraphStore}
+    try:
+        return factories[backend](db, knowledge_base_id)
+    except KeyError as exc:
+        raise ValueError(f"unsupported_graph_backend:{backend}") from exc

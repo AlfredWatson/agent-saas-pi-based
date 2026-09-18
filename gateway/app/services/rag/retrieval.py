@@ -9,9 +9,7 @@ from rank_bm25 import BM25Okapi
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .graph import reciprocal_rank_fusion
-from .model_clients import embedding_client, input_from_stored
-from .models import (
+from app.db.rag.models import (
     Chunk,
     GraphArtifact,
     GraphEdge,
@@ -19,8 +17,10 @@ from .models import (
     GraphNode,
     RagModelConfig,
 )
-from .schemas import RetrievalInput
-from .vector_store import PostgresVectorStore
+from app.domain.rag.graph import reciprocal_rank_fusion
+from app.domain.rag.schemas import RetrievalInput
+from app.integrations.rag.model_clients import embedding_client, input_from_stored
+from app.integrations.rag.vector_store import PostgresVectorStore
 
 
 def tokenize(text: str) -> list[str]:

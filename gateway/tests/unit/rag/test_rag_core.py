@@ -3,14 +3,21 @@ from io import BytesIO
 
 import pytest
 from app.core.config import Settings
-from app.rag.chunking import split_documents, token_count
-from app.rag.graph import canonical_key, merge_property_maps, reciprocal_rank_fusion
-from app.rag import model_clients
-from app.rag import processors
-from app.api.v1.rag import sanitized_stored_filename
-from app.rag.file_storage import PostgresFileStorage
-from app.rag.models import RagDocument
-from app.rag.processors import DefaultDocumentProcessor, UnsupportedDocumentError
+from app.domain.rag.chunking import split_documents, token_count
+from app.domain.rag.graph import (
+    canonical_key,
+    merge_property_maps,
+    reciprocal_rank_fusion,
+)
+from app.integrations.rag import model_clients, processors
+from app.api.v1.rag.knowledge_bases import sanitized_stored_filename
+from app.db.rag.models import RagDocument
+from app.integrations.rag.file_storage import PostgresFileStorage
+from app.integrations.rag.processors import (
+    DefaultDocumentProcessor,
+    UnsupportedDocumentError,
+)
+from app.workers.rag.handlers import stage_handlers
 from docx import Document as WordDocument
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -198,3 +205,25 @@ def test_model_base_url_rejects_credentials_and_private_addresses(monkeypatch):
         asyncio.run(model_clients.validate_base_url("https://user:secret@example.com"))
     with pytest.raises(ValueError, match="private_model_base_url_forbidden"):
         asyncio.run(model_clients.validate_base_url("https://127.0.0.1/v1"))
+
+
+def test_stage_handler_registry_is_explicit_and_extensible():
+    class Worker:
+        async def process_parsing(self, db, job):
+            return None
+
+        async def process_chunking(self, db, job):
+            return None
+
+        async def process_vectorization(self, db, job):
+            return None
+
+        async def process_graph(self, db, job):
+            return None
+
+    assert set(stage_handlers(Worker())) == {
+        "parsing",
+        "chunking",
+        "vectorization",
+        "graph_extraction",
+    }

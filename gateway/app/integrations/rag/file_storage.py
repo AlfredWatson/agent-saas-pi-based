@@ -4,7 +4,7 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import RagDocument
+from app.db.rag.models import RagDocument
 
 
 class FileStorageBackend(Protocol):
@@ -41,6 +41,10 @@ class PostgresFileStorage:
 
 
 def get_file_storage(backend: str, db: AsyncSession) -> FileStorageBackend:
-    if backend != "postgresql":
-        raise ValueError(f"unsupported_file_backend:{backend}")
-    return PostgresFileStorage(db)
+    factories: dict[str, type[PostgresFileStorage]] = {
+        "postgresql": PostgresFileStorage
+    }
+    try:
+        return factories[backend](db)
+    except KeyError as exc:
+        raise ValueError(f"unsupported_file_backend:{backend}") from exc

@@ -11,15 +11,9 @@ from langchain_core.documents import Document
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..core.config import get_settings
-from ..core.encryption import encrypt
-from ..db.session import SessionLocal
-from .cache import RagCache
-from .chunking import content_hash, split_documents, token_count
-from .file_storage import get_file_storage
-from .graph_store import get_graph_store
-from .model_clients import chat_client, embedding_client, input_from_stored
-from .models import (
+from app.core.config import get_settings
+from app.core.encryption import encrypt
+from app.db.rag.models import (
     Chunk,
     ChunkVector,
     DocumentBlock,
@@ -33,10 +27,21 @@ from .models import (
     RagModelConfig,
     RagOperation,
 )
-from .processors import get_document_processor
-from .schemas import GraphExtraction
-from .startup import verify_rag_database
-from .vector_store import PostgresVectorStore
+from app.db.session import SessionLocal
+from app.db.rag.startup import verify_rag_database
+from app.domain.rag.chunking import content_hash, split_documents, token_count
+from app.domain.rag.schemas import GraphExtraction
+from app.integrations.rag.cache import RagCache
+from app.integrations.rag.file_storage import get_file_storage
+from app.integrations.rag.graph_store import get_graph_store
+from app.integrations.rag.model_clients import (
+    chat_client,
+    embedding_client,
+    input_from_stored,
+)
+from app.integrations.rag.processors import get_document_processor
+from app.integrations.rag.vector_store import PostgresVectorStore
+from app.workers.rag.handlers import stage_handlers
 
 logger = logging.getLogger("uvicorn.error")
 STAGE_FIELD = {
@@ -332,14 +337,10 @@ class RagWorker:
                         or job.leased_by != self.worker_id
                     ):
                         return
-                    if job.kind == "parsing":
-                        await self.process_parsing(db, job)
-                    elif job.kind == "chunking":
-                        await self.process_chunking(db, job)
-                    elif job.kind == "vectorization":
-                        await self.process_vectorization(db, job)
-                    else:
-                        await self.process_graph(db, job)
+                    handler = stage_handlers(self).get(job.kind)
+                    if handler is None:
+                        raise RuntimeError(f"unsupported_processing_job:{job.kind}")
+                    await handler.execute(db, job)
                     job = await db.get(ProcessingJob, job_id)
                     if job is None:
                         return
