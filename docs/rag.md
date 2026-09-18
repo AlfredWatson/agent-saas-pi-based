@@ -89,6 +89,82 @@ chunking 配置可在上传后任何时候设置，但必须早于 chunking 任�
 `/chunks` 会同时删除向量和图谱；删除 `/blocks` 会继续删除 chunks 及全部下游数据。任一相关
 任务处于 `queued` 或 `running` 时，派生数据删除会返回 `409 document_processing`。
 
+## 最小验证流程
+
+这个流程只验证不依赖外部模型的基础闭环：认证、Workspace 隔离、知识库创建、文件持久化、
+parsing 和 fixed chunking。先按“启动”一节运行 Redis、Gateway 与 RAG worker；Gateway 启动成功
+本身已完成 PostgreSQL、pgvector 和 Redis 的连通性检查。下面示例需要 `curl` 和 `jq`，并使用
+当前 `.env` 的 `21995` 端口；如端口不同，覆盖 `RAG_BASE` 即可。
+
+```bash
+set -euo pipefail
+
+RAG_BASE="${RAG_BASE:-http://127.0.0.1:21995/api/v1}"
+EMAIL="rag-min-$(date +%s)-$RANDOM@example.test"
+PASSWORD='rag-minimum-password-2026'
+INPUT_FILE="$(mktemp --suffix=.md)"
+trap 'rm -f "$INPUT_FILE"' EXIT
+printf '# Minimal RAG\nThis document validates parsing and chunking.\n' >"$INPUT_FILE"
+
+# 1. 注册会创建 default workspace；随后确认当前部署能力。
+TOKEN="$(curl -fsS -X POST "$RAG_BASE/auth/register" \
+  -H 'Content-Type: application/json' \
+  --data "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" | jq -r '.access_token')"
+AUTH=(-H "Authorization: Bearer $TOKEN")
+curl -fsS "${AUTH[@]}" "$RAG_BASE/rag/capabilities" | jq .
+WORKSPACE_ID="$(curl -fsS "${AUTH[@]}" "$RAG_BASE/workspaces" | jq -r '.items[] | select(.is_current).id')"
+
+# 2. 创建后端均固定为 PostgreSQL 的知识库。
+KB_ID="$(curl -fsS -X POST "${AUTH[@]}" \
+  -H 'Content-Type: application/json' \
+  --data '{"name":"minimal-rag","file_backend":"postgresql","block_backend":"postgresql","chunk_backend":"postgresql","vector_backend":"postgresql","graph_backend":"postgresql"}' \
+  "$RAG_BASE/workspaces/$WORKSPACE_ID/knowledge-bases" | jq -r '.id')"
+
+# 3. 上传不创建任务；响应中四个 stages 都应为 not_started。
+DOCUMENT_ID="$(curl -fsS -X POST "${AUTH[@]}" \
+  -F "files=@${INPUT_FILE};filename=minimal.md;type=text/markdown" \
+  "$RAG_BASE/workspaces/$WORKSPACE_ID/knowledge-bases/$KB_ID/documents" \
+  | tee /dev/stderr | jq -r '.items[0].document.id')"
+
+# 4. 提交 parsing，等待文档阶段变为 succeeded。
+curl -fsS -X POST "${AUTH[@]}" -H 'Content-Type: application/json' \
+  --data "{\"items\":[{\"document_id\":\"$DOCUMENT_ID\"}]}" \
+  "$RAG_BASE/workspaces/$WORKSPACE_ID/knowledge-bases/$KB_ID/jobs/parsing" | jq .
+
+wait_stage() {
+  local stage="$1" state deadline
+  deadline=$((SECONDS + 60))
+  while (( SECONDS < deadline )); do
+    state="$(curl -fsS "${AUTH[@]}" \
+      "$RAG_BASE/workspaces/$WORKSPACE_ID/knowledge-bases/$KB_ID/documents/$DOCUMENT_ID" \
+      | jq -r --arg stage "$stage" '.stages[$stage].status')"
+    case "$state" in
+      succeeded) return 0 ;;
+      failed) echo "$stage failed; inspect document error and jobs" >&2; return 1 ;;
+    esac
+    sleep 1
+  done
+  echo "timed out waiting for $stage" >&2
+  return 1
+}
+wait_stage parsing
+
+# 5. 未设置配置时，文档使用上传时从 env 复制的 fixed 默认参数。
+curl -fsS -X POST "${AUTH[@]}" -H 'Content-Type: application/json' \
+  --data "{\"document_ids\":[\"$DOCUMENT_ID\"]}" \
+  "$RAG_BASE/workspaces/$WORKSPACE_ID/knowledge-bases/$KB_ID/jobs/chunking" | jq .
+wait_stage chunking
+
+# 6. 最终状态：parsing/chunking=succeeded，vectorization/graph=not_started。
+curl -fsS "${AUTH[@]}" \
+  "$RAG_BASE/workspaces/$WORKSPACE_ID/knowledge-bases/$KB_ID/documents/$DOCUMENT_ID" | jq .
+```
+
+若 parsing 或 chunking 失败，先读取上述文档对象中的 `stages.<stage>.error`，再查询
+`GET .../knowledge-bases/{knowledge_base_id}/jobs` 的 `error` 和 `message`。最小流程完成后可删除
+知识库：`DELETE .../knowledge-bases/{knowledge_base_id}` 返回异步 operation；轮询
+`GET /api/v1/rag/operations/{operation_id}` 至 `succeeded` 后，其文件、blocks、chunks 与任务会被清理。
+
 ## Smoke 验收
 
 先在三个终端分别启动 Redis、模型 mock、Gateway 和 worker。Gateway 必须由启动脚本读取 `.env`
