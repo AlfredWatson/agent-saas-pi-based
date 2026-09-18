@@ -159,13 +159,20 @@ docker network inspect "$RUNTIME_DOCKER_NETWORK"
 curl --noproxy '*' http://127.0.0.1:8000/openapi.json >/dev/null
 ```
 
-再运行不产生真实费用的 Faux 全流程：
+再使用专用测试账号和真实 Provider 运行完整 Agent user flow：
 
 ```bash
-SMOKE_PROVIDER=faux uv run python scripts/smoke_flow.py
+export AGENT_TEST_EMAIL='agent-test@example.com'
+export AGENT_TEST_PASSWORD='replace-with-test-password'
+export AGENT_TEST_PROVIDER_ID='your-provider'
+export AGENT_TEST_PROVIDER_API_KEY='replace-with-provider-key'
+export AGENT_TEST_MODEL_ID='your-model'
+uv run python test/agent_user_flow.py --report /tmp/agent-user-flow.json
 ```
 
-脚本覆盖注册、登录、Binding、模型目录、Profile、Session、SSE 文本、消息历史字段/顺序和客户端断开后后台持续写入。只有显式设置 `SMOKE_PROVIDER_API_KEY` 才允许真实 Provider；可通过 `SMOKE_RUNTIME_RESTART_COMMAND` 将 Runtime 重启恢复加入 smoke。
+该 flow 覆盖登录、Binding、模型目录、Profile、Workspace 文件上传/覆盖/删除、Session、真实
+Agent 的 XLSX 工具读取、SSE 文本与工具事件、消息历史字段/顺序，以及客户端断开后的后台持续
+写入。它不创建用户；注册、跨用户授权和控制指令竞态由单元/集成测试覆盖。
 
 ## 5. Runtime 隔离与数据流
 

@@ -1,6 +1,6 @@
 # Pi SaaS Platform API 文档
 
-> 版本：基于当前仓库源码整理，日期：2026-09-12。
+> 版本：基于当前仓库源码整理，日期：2026-09-18。
 >
 > 公共 API 根路径：`http(s)://<gateway-host>/api/v1`。本文描述 FastAPI Gateway 的对外契约；`/internal/v1/*` 是 Gateway 与 Runtime 的内部协议，不能经公网或客户端直接调用。
 
@@ -41,15 +41,20 @@ register/login → providers → provider-bindings → models
        → sessions/{id}/messages
 ```
 
-可使用仓库交互脚本验证此流程：
+可使用统一的真实模型黑盒验收流程验证此链路。该流程使用既有专用测试账号，创建并清理
+独立的 Workspace、Binding、Profile 和 Session，并证明 Agent 通过工具读取上传的 XLSX：
 
 ```bash
-uv run python scripts/api_test_register_login_provider.py
-uv run python scripts/api_test_login_session_chat.py
+export AGENT_TEST_EMAIL='agent-test@example.com'
+export AGENT_TEST_PASSWORD='replace-with-test-password'
+export AGENT_TEST_PROVIDER_ID='your-provider'
+export AGENT_TEST_PROVIDER_API_KEY='replace-with-provider-key'
+export AGENT_TEST_MODEL_ID='your-model'
+uv run python test/agent_user_flow.py --report /tmp/agent-user-flow.json
 ```
 
-脚本默认使用 `.env` 的 `GATEWAY_HOST` 和 `GATEWAY_PORT`。可设置完整的
-`GATEWAY_URL` 临时覆盖该地址。
+Gateway 默认使用 `.env` 的 `GATEWAY_HOST` 和 `GATEWAY_PORT`；可用
+`AGENT_TEST_GATEWAY` 提供完整 API 根路径覆盖。测试凭据只应放在环境变量中，报告会脱敏。
 
 ## 3. 认证
 
@@ -168,6 +173,12 @@ Binding 必须属于当前用户且是 `active`：
 ### `PUT /agent-profiles/{profile_id}`
 
 请求体与创建相同。成功：`200 {"id":"<uuid>","name":"faux-high"}`；不存在/非本人：`404 profile_not_found`；Binding、模型或推理等级无效：`422`。
+
+### `DELETE /agent-profiles/{profile_id}`
+
+删除当前用户不再被任何 Session 引用的 Profile，成功返回 `204`。不存在或不属于当前用户
+返回 `404 profile_not_found`；仍被任一 Session 引用时返回 `409 profile_in_use`。调用方应先
+删除关联 Workspace（其会级联删除 Session），再删除 Profile。
 
 ### `GET /workspaces`
 

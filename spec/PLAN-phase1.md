@@ -74,7 +74,11 @@ pi-saas-platform/
 ├── infra/
 │   └── compose.dev.yml
 ├── scripts/
-│   └── smoke_flow.py
+│   ├── start_gateway.py
+│   └── start_rag_worker.py
+├── test/
+│   ├── agent_user_flow.py
+│   └── rag_user_flow.py
 ├── .env.example
 └── README.md
 ```
@@ -272,20 +276,17 @@ RUNTIME_DATA_ROOT/
 
 ### 端到端
 
-启动 `pi_saas_test`、Faux Runtime 和真实 Uvicorn，通过 `scripts/smoke_flow.py` 只调用 FastAPI：
+通过 `test/agent_user_flow.py` 只调用 FastAPI，使用既有专用测试账号和显式配置的真实
+Provider：
 
-1. 注册并取得 JWT。
-2. 绑定测试 Provider。
-3. 获取模型并创建 Agent Profile。
-4. 上传测试 Skill 并绑定 Profile。
-5. 创建 Session。
-6. 发起 Chat，验证 SSE delta、兼容工具事件的扩展载荷和 `done`。
-7. 查询 PostgreSQL 完整有序消息历史（含工具结构化字段）。
-8. 模拟 SSE 断线，确认后台完成。
-9. 重启 Runtime，确认 Session 可以恢复并继续 Chat。
-10. 使用第二用户验证资源隔离。
+1. 登录、读取 Runtime/Provider 目录，并创建 Binding 和 Profile。
+2. 创建并切换隔离 Workspace，上传、重复校验、覆盖和删除生成的 XLSX。
+3. 用当前 Workspace 创建 Session，让 Agent 使用工具读取 XLSX，并验证 SHA-256、工作表与单元格。
+4. 验证 SSE 文本/工具事件、结构化有序消息历史和客户端断线后的后台完成。
+5. 依次删除 Workspace、Profile 并禁用 Binding；失败报告创建的资源 ID。
 
-可选手动冒烟测试使用真实 Provider API Key；默认测试和 CI 不读取真实密钥、不消费付费 token。
+注册、跨用户授权、控制指令竞态和 Runtime 重建由确定性的单元/集成测试覆盖。真实模型凭据仅
+从 `AGENT_TEST_*` 环境变量读取，不进入 CI、命令行参数或报告。
 
 ## 7. 默认约束
 

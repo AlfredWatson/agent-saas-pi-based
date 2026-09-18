@@ -165,27 +165,23 @@ curl -fsS "${AUTH[@]}" \
 知识库：`DELETE .../knowledge-bases/{knowledge_base_id}` 返回异步 operation；轮询
 `GET /api/v1/rag/operations/{operation_id}` 至 `succeeded` 后，其文件、blocks、chunks 与任务会被清理。
 
-## Smoke 验收
+## User-flow 验收
 
-先在三个终端分别启动 Redis、模型 mock、Gateway 和 worker。Gateway 必须由启动脚本读取 `.env`
-中的 `GATEWAY_HOST` 与 `GATEWAY_PORT`；例如当前配置端口为 `21995` 时：
+先启动 Redis、Gateway、worker 和 `.env` 配置的真实 embedding/LLM 服务。Gateway 必须由启动脚本
+读取 `.env` 中的 `GATEWAY_HOST` 与 `GATEWAY_PORT`：
 
 ```bash
 # terminal 1
 docker compose --env-file .env -f infra/compose.dev.yml up -d redis
 
-# terminal 2
-uv run python scripts/rag_mock_model.py
-
-# terminal 3 and 4
+# terminal 2 and 3
 uv run python scripts/start_gateway.py
 uv run python scripts/start_rag_worker.py
 
-# terminal 5: use the value configured in .env, rather than the script's fallback URL
-RAG_SMOKE_GATEWAY=http://127.0.0.1:21995/api/v1 \
-  uv run python scripts/rag_smoke_flow.py
+# terminal 4: address, account, and model defaults may be overridden with RAG_TEST_*
+uv run python test/rag_user_flow.py --report /tmp/rag-user-flow.json
 ```
 
-该 smoke 会创建隔离测试用户和知识库，覆盖五种文件、四阶段、向量/图谱缓存续跑、三种检索、
-图谱合并、知识库复制和级联删除；脚本结束时会清理其创建的测试数据。生产或共享环境应使用
-独立测试数据库和 Redis DB。
+该 flow 覆盖五种文件、四阶段、失败缓存续跑、三种检索、图谱合并、知识库复制和级联删除；
+脚本结束时会清理其创建的 Workspace 和知识库。生产或共享环境应使用独立测试账号、数据库和
+Redis DB。
