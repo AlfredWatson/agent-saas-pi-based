@@ -65,8 +65,10 @@ class Settings(BaseSettings):
     chunk_re_expression: str = r"\n{2,}|(?<=[。！？.!?])\s+"
     chunk_breakpoint_threshold: float = Field(default=95.0, gt=0, lt=100)
     rag_model_base_url_allow_private: bool = False
-    rag_model_request_timeout_seconds: int = Field(default=60, ge=1, le=600)
+    rag_model_request_timeout_seconds: int = Field(default=300, ge=1, le=600)
     rag_model_max_retries: int = Field(default=1, ge=0, le=10)
+    rag_graph_max_output_tokens: int = Field(default=4096, ge=64, le=8192)
+    rag_openai_chat_template_disable_thinking: bool = False
     langsmith_api_key: str | None = None
     langsmith_tracing: bool = False
     langsmith_project: str = "pi-saas-rag"

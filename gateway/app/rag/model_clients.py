@@ -94,13 +94,17 @@ def embedding_client(body: ModelConfigInput) -> OpenAIEmbeddings:
     )
 
 
-def chat_client(body: ModelConfigInput):
+def chat_client(body: ModelConfigInput, *, max_tokens: int | None = None):
     _bypass_proxy_for_local_development(body.base_url)
     settings = get_settings()
     if body.protocol == "openai":
         options = {}
         if body.thinking_effort:
             options["reasoning_effort"] = body.thinking_effort
+        elif settings.rag_openai_chat_template_disable_thinking:
+            options["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+        if max_tokens is not None:
+            options["max_tokens"] = max_tokens
         return ChatOpenAI(
             model=body.model_name,
             base_url=body.base_url.rstrip("/"),
@@ -117,6 +121,8 @@ def chat_client(body: ModelConfigInput):
             if body.thinking_effort not in efforts:
                 raise ValueError("invalid_anthropic_thinking_effort")
             options["effort"] = body.thinking_effort
+        if max_tokens is not None:
+            options["max_tokens"] = max_tokens
         return ChatAnthropic(
             model=body.model_name,
             base_url=body.base_url.rstrip("/"),

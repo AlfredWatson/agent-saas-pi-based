@@ -1,27 +1,31 @@
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 
+GraphPropertyValue = Annotated[str, Field(max_length=120)] | int | float | bool
+GraphProperties = dict[str, GraphPropertyValue]
+
+
 class ExtractedNode(BaseModel):
     name: str = Field(min_length=1, max_length=512)
     entity_type: str = Field(min_length=1, max_length=128)
-    description: str = ""
-    properties: dict[str, object] = Field(default_factory=dict)
+    description: str = Field(default="", max_length=160)
+    properties: GraphProperties = Field(default_factory=dict, max_length=4)
 
 
 class ExtractedEdge(BaseModel):
     source: str = Field(min_length=1, max_length=512)
     relation: str = Field(min_length=1, max_length=256)
     target: str = Field(min_length=1, max_length=512)
-    description: str = ""
-    properties: dict[str, object] = Field(default_factory=dict)
+    description: str = Field(default="", max_length=160)
+    properties: GraphProperties = Field(default_factory=dict, max_length=4)
 
 
 class GraphExtraction(BaseModel):
-    nodes: list[ExtractedNode] = Field(default_factory=list)
-    edges: list[ExtractedEdge] = Field(default_factory=list)
+    nodes: list[ExtractedNode] = Field(default_factory=list, max_length=8)
+    edges: list[ExtractedEdge] = Field(default_factory=list, max_length=12)
 
 
 class KnowledgeBaseCreate(BaseModel):

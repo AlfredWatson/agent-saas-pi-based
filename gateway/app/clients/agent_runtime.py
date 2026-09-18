@@ -26,51 +26,84 @@ class RuntimeClient:
 
     async def providers(self, user_id: str) -> list[dict]:
         base_url = await self._base_url(user_id)
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(f"{base_url}/internal/v1/providers", headers=self._headers(user_id))
+        async with httpx.AsyncClient(timeout=10, trust_env=False) as client:
+            response = await client.get(
+                f"{base_url}/internal/v1/providers", headers=self._headers(user_id)
+            )
             response.raise_for_status()
             return response.json()["providers"]
 
-    async def accept_provider_binding(self, user_id: str, provider_id: str, api_key: str) -> None:
+    async def accept_provider_binding(
+        self, user_id: str, provider_id: str, api_key: str
+    ) -> None:
         base_url = await self._base_url(user_id)
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.post(f"{base_url}/internal/v1/providers/validate", headers=self._headers(user_id), json={"provider_id": provider_id, "api_key": api_key})
+        async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
+            response = await client.post(
+                f"{base_url}/internal/v1/providers/validate",
+                headers=self._headers(user_id),
+                json={"provider_id": provider_id, "api_key": api_key},
+            )
             response.raise_for_status()
             return None
 
     async def models(self, user_id: str, provider_id: str) -> list[dict]:
         base_url = await self._base_url(user_id)
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.get(f"{base_url}/internal/v1/models", headers=self._headers(user_id), params={"provider_id": provider_id})
+        async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
+            response = await client.get(
+                f"{base_url}/internal/v1/models",
+                headers=self._headers(user_id),
+                params={"provider_id": provider_id},
+            )
             response.raise_for_status()
             return response.json()["models"]
 
-    async def ensure_session(self, user_id: str, session_id: str, payload: dict) -> dict:
+    async def ensure_session(
+        self, user_id: str, session_id: str, payload: dict
+    ) -> dict:
         base_url = await self._base_url(user_id)
-        async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.put(f"{base_url}/internal/v1/sessions/{session_id}", headers=self._headers(user_id), json=payload)
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+            response = await client.put(
+                f"{base_url}/internal/v1/sessions/{session_id}",
+                headers=self._headers(user_id),
+                json=payload,
+            )
             response.raise_for_status()
             return response.json()
 
-    async def stream_chat(self, user_id: str, session_id: str, content: str) -> AsyncIterator[dict]:
+    async def stream_chat(
+        self, user_id: str, session_id: str, content: str
+    ) -> AsyncIterator[dict]:
         base_url = await self._base_url(user_id)
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream("POST", f"{base_url}/internal/v1/sessions/{session_id}/chat", headers=self._headers(user_id), json={"content": content}) as response:
+        async with httpx.AsyncClient(timeout=None, trust_env=False) as client:
+            async with client.stream(
+                "POST",
+                f"{base_url}/internal/v1/sessions/{session_id}/chat",
+                headers=self._headers(user_id),
+                json={"content": content},
+            ) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if line:
                         yield __import__("json").loads(line)
 
-    async def control(self, user_id: str, session_id: str, action: str, content: str | None = None) -> None:
+    async def control(
+        self, user_id: str, session_id: str, action: str, content: str | None = None
+    ) -> None:
         base_url = await self._base_url(user_id)
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.post(f"{base_url}/internal/v1/sessions/{session_id}/{action}", headers=self._headers(user_id), json={"content": content} if content else {})
+        async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
+            response = await client.post(
+                f"{base_url}/internal/v1/sessions/{session_id}/{action}",
+                headers=self._headers(user_id),
+                json={"content": content} if content else {},
+            )
             response.raise_for_status()
 
-    async def delete_workspace(self, user_id: str, workspace_key: str, sessions: list[dict]) -> None:
+    async def delete_workspace(
+        self, user_id: str, workspace_key: str, sessions: list[dict]
+    ) -> None:
         base_url = await self._base_url(user_id)
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
                 response = await client.request(
                     "DELETE",
                     f"{base_url}/internal/v1/workspaces/{workspace_key}",
@@ -86,11 +119,16 @@ class RuntimeClient:
         except httpx.HTTPError as exc:
             raise RuntimeUnavailableError("runtime_workspace_delete_failed") from exc
 
-    async def list_workspace_files(self, user_id: str, workspace_key: str) -> list[dict]:
+    async def list_workspace_files(
+        self, user_id: str, workspace_key: str
+    ) -> list[dict]:
         base_url = await self._base_url(user_id)
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                response = await client.get(f"{base_url}/internal/v1/workspaces/{workspace_key}/files", headers=self._headers(user_id))
+            async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+                response = await client.get(
+                    f"{base_url}/internal/v1/workspaces/{workspace_key}/files",
+                    headers=self._headers(user_id),
+                )
         except httpx.HTTPError as exc:
             raise RuntimeUnavailableError("runtime_workspace_file_list_failed") from exc
         self._raise_file_operation_error(response)
@@ -106,29 +144,38 @@ class RuntimeClient:
     ) -> dict:
         base_url = await self._base_url(user_id)
         try:
-            async with httpx.AsyncClient(timeout=None) as client:
+            async with httpx.AsyncClient(timeout=None, trust_env=False) as client:
                 response = await client.put(
                     f"{base_url}/internal/v1/workspaces/{workspace_key}/files",
-                    headers={**self._headers(user_id), "Content-Type": "application/octet-stream"},
+                    headers={
+                        **self._headers(user_id),
+                        "Content-Type": "application/octet-stream",
+                    },
                     params={"path": path, "overwrite": str(overwrite).lower()},
                     content=content,
                 )
         except httpx.HTTPError as exc:
-            raise RuntimeUnavailableError("runtime_workspace_file_upload_failed") from exc
+            raise RuntimeUnavailableError(
+                "runtime_workspace_file_upload_failed"
+            ) from exc
         self._raise_file_operation_error(response)
         return response.json()
 
-    async def delete_workspace_file(self, user_id: str, workspace_key: str, path: str) -> None:
+    async def delete_workspace_file(
+        self, user_id: str, workspace_key: str, path: str
+    ) -> None:
         base_url = await self._base_url(user_id)
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
                 response = await client.delete(
                     f"{base_url}/internal/v1/workspaces/{workspace_key}/files",
                     headers=self._headers(user_id),
                     params={"path": path},
                 )
         except httpx.HTTPError as exc:
-            raise RuntimeUnavailableError("runtime_workspace_file_delete_failed") from exc
+            raise RuntimeUnavailableError(
+                "runtime_workspace_file_delete_failed"
+            ) from exc
         self._raise_file_operation_error(response)
 
     @staticmethod
@@ -147,7 +194,9 @@ class RuntimeClient:
         try:
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise RuntimeUnavailableError("runtime_workspace_file_operation_failed") from exc
+            raise RuntimeUnavailableError(
+                "runtime_workspace_file_operation_failed"
+            ) from exc
 
 
 class RuntimeWorkspaceBusyError(RuntimeError):

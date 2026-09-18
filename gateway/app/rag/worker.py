@@ -576,9 +576,10 @@ class RagWorker:
             "llm",
             str(job.config_snapshot["model_fingerprint"]),
         )
-        extractor = chat_client(input_from_stored(config)).with_structured_output(
-            GraphExtraction
-        )
+        extractor = chat_client(
+            input_from_stored(config),
+            max_tokens=self.settings.rag_graph_max_output_tokens,
+        ).with_structured_output(GraphExtraction)
         chunks = list(
             (
                 await db.scalars(
@@ -599,7 +600,7 @@ class RagWorker:
             key = self.cache.item_key(
                 job.knowledge_base_id,
                 document.id,
-                "graph-v1",
+                "graph-v2",
                 config.fingerprint,
                 generation,
                 chunk.content_hash,
@@ -607,8 +608,11 @@ class RagWorker:
             cached = await self.cache.get(key)
             if cached is None:
                 result = await extractor.ainvoke(
-                    "Extract a concise knowledge graph from the text. Every edge endpoint must also appear in nodes.\n\n"
-                    + chunk.text
+                    "Extract a compact factual knowledge graph from the text. "
+                    "Return at most 8 nodes and 12 edges. Every edge endpoint must "
+                    "also appear in nodes. Keep each description to one short sentence; "
+                    "use at most four scalar properties per node or edge, and omit "
+                    "properties that are not necessary.\n\n" + chunk.text
                 )
                 graph = (
                     result
