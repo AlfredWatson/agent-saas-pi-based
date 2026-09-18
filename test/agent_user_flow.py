@@ -795,23 +795,40 @@ class AgentUserFlow:
         )
 
 
-def required_environment(name: str) -> str:
-    value = os.getenv(name)
+def configured_value(name: str, dotenv_values: dict[str, str]) -> str | None:
+    """Prefer an explicit shell value, then use the repository-local .env."""
+    return os.getenv(name) or dotenv_values.get(name)
+
+
+def required_environment(name: str, dotenv_values: dict[str, str]) -> str:
+    value = configured_value(name, dotenv_values)
     if not value:
-        raise FlowError(f"required environment variable is missing: {name}")
+        raise FlowError(f"required test configuration is missing: {name}")
     return value
 
 
 def parse_args() -> Config:
+    dotenv_values = parse_dotenv(ROOT / ".env")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--gateway", default=os.getenv("AGENT_TEST_GATEWAY", gateway_from_env_file())
+        "--gateway",
+        default=configured_value("AGENT_TEST_GATEWAY", dotenv_values)
+        or gateway_from_env_file(),
     )
-    parser.add_argument("--email", default=os.getenv("AGENT_TEST_EMAIL"))
-    parser.add_argument("--provider-id", default=os.getenv("AGENT_TEST_PROVIDER_ID"))
-    parser.add_argument("--model-id", default=os.getenv("AGENT_TEST_MODEL_ID"))
     parser.add_argument(
-        "--thinking-level", default=os.getenv("AGENT_TEST_THINKING_LEVEL") or None
+        "--email", default=configured_value("AGENT_TEST_EMAIL", dotenv_values)
+    )
+    parser.add_argument(
+        "--provider-id",
+        default=configured_value("AGENT_TEST_PROVIDER_ID", dotenv_values),
+    )
+    parser.add_argument(
+        "--model-id",
+        default=configured_value("AGENT_TEST_MODEL_ID", dotenv_values),
+    )
+    parser.add_argument(
+        "--thinking-level",
+        default=configured_value("AGENT_TEST_THINKING_LEVEL", dotenv_values),
     )
     parser.add_argument("--request-timeout-seconds", type=float, default=60)
     parser.add_argument("--run-timeout-seconds", type=float, default=300)
@@ -824,16 +841,18 @@ def parse_args() -> Config:
         (args.provider_id, "AGENT_TEST_PROVIDER_ID"),
         (args.model_id, "AGENT_TEST_MODEL_ID"),
     ):
-        require(bool(value), f"required environment variable is missing: {name}")
+        require(bool(value), f"required test configuration is missing: {name}")
     require(args.request_timeout_seconds > 0, "request timeout must be positive")
     require(args.run_timeout_seconds > 0, "run timeout must be positive")
     require(args.poll_interval_seconds > 0, "poll interval must be positive")
     return Config(
         gateway=normalized_api_base(args.gateway),
         email=args.email,
-        password=required_environment("AGENT_TEST_PASSWORD"),
+        password=required_environment("AGENT_TEST_PASSWORD", dotenv_values),
         provider_id=args.provider_id,
-        provider_api_key=required_environment("AGENT_TEST_PROVIDER_API_KEY"),
+        provider_api_key=required_environment(
+            "AGENT_TEST_PROVIDER_API_KEY", dotenv_values
+        ),
         model_id=args.model_id,
         thinking_level=args.thinking_level,
         request_timeout_seconds=args.request_timeout_seconds,
