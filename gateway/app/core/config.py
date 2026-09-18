@@ -169,6 +169,17 @@ class Settings(BaseSettings):
         return f"redis://{username}:{password}@{self.redis_host}:{self.redis_port}/{self.redis_database}"
 
     @property
+    def redis_display_url(self) -> str:
+        return URL.create(
+            "redis",
+            username=self.redis_username,
+            password=self.redis_password,
+            host=self.redis_host,
+            port=self.redis_port,
+            database=str(self.redis_database),
+        ).render_as_string(hide_password=True)
+
+    @property
     def project_root(self) -> Path:
         return Path(__file__).parents[3]
 

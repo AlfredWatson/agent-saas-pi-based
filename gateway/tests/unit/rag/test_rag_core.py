@@ -184,6 +184,8 @@ def test_postgres_file_storage_hides_document_bytea_access():
 def test_redis_url_quotes_acl_credentials():
     settings = Settings(redis_username="admin-user", redis_password="secret@value")
     assert settings.redis_url.startswith("redis://admin-user:secret%40value@")
+    assert settings.redis_display_url == "redis://admin-user:***@127.0.0.1:6379/0"
+    assert "secret" not in settings.redis_display_url
 
 
 def test_model_base_url_rejects_credentials_and_private_addresses(monkeypatch):

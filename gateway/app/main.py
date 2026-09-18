@@ -49,6 +49,11 @@ async def lifespan(_: FastAPI):
     cache = RagCache()
     try:
         await cache.ping()
+        logger.info(
+            "Redis cache connection: %s (max_connections=%d)",
+            settings.redis_display_url,
+            settings.redis_max_connections,
+        )
     finally:
         await cache.close()
     await RuntimeClient().health()
