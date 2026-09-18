@@ -34,7 +34,7 @@ import httpx
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_FILES_DIR = ROOT / "tests" / "files"
+DEFAULT_FILES_DIR = ROOT / "test" / "files"
 FIXTURE_NAMES = (
     "doc-test-1.docx",
     "doc-test-2.docx",

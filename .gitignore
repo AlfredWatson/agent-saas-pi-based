@@ -106,5 +106,5 @@ memory-bank
 /agent-runtime/node_modules/**
 /agent-runtime/.runtime-data/**
 .runtime-data/**
-/tests/**
+/test/files/**
 /docker/volumes/**
