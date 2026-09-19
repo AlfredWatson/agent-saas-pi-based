@@ -10,7 +10,9 @@ from ..session import engine
 
 
 def _migration_head() -> str:
-    gateway_root = Path(__file__).parents[2]
+    # This module lives at gateway/app/db/rag/.  Keep the Alembic root tied to
+    # the Gateway package rather than the module's former app/rag location.
+    gateway_root = Path(__file__).parents[3]
     config = Config(str(gateway_root / "alembic.ini"))
     config.set_main_option("script_location", str(gateway_root / "migrations"))
     return ScriptDirectory.from_config(config).get_current_head()

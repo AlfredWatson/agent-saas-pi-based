@@ -100,7 +100,7 @@ parsing 和 fixed chunking。先按“启动”一节运行 Redis、Gateway 与 
 set -euo pipefail
 
 RAG_BASE="${RAG_BASE:-http://127.0.0.1:21995/api/v1}"
-EMAIL="rag-min-$(date +%s)-$RANDOM@example.test"
+EMAIL="rag-min-$(date +%s)-$RANDOM@example.com"
 PASSWORD='rag-minimum-password-2026'
 INPUT_FILE="$(mktemp --suffix=.md)"
 trap 'rm -f "$INPUT_FILE"' EXIT

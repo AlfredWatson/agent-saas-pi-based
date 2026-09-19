@@ -19,7 +19,6 @@ import argparse
 import hashlib
 import json
 import math
-import os
 import re
 import sys
 import time
@@ -31,6 +30,8 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+
+from flow_env import configured_value, parse_dotenv
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,26 +106,6 @@ def response_body(response: httpx.Response) -> Any:
         return redact(response.json())
     except ValueError:
         return response.text[:2_000]
-
-
-def parse_dotenv(path: Path) -> dict[str, str]:
-    """Read the small subset of .env syntax needed for the Gateway address."""
-    if not path.is_file():
-        return {}
-    values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        candidate = line.strip()
-        if not candidate or candidate.startswith("#") or "=" not in candidate:
-            continue
-        key, value = candidate.split("=", 1)
-        key = key.strip()
-        if not key:
-            continue
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        values[key] = value
-    return values
 
 
 def gateway_from_env_file() -> str:
@@ -1541,40 +1522,50 @@ class UserFlow:
 
 
 def parse_args() -> Config:
+    dotenv_values = parse_dotenv(ROOT / ".env")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--gateway",
-        default=os.getenv("RAG_TEST_GATEWAY", gateway_from_env_file()),
+        default=configured_value("RAG_TEST_GATEWAY", dotenv_values)
+        or gateway_from_env_file(),
         help="Gateway API base URL; defaults to GATEWAY_HOST/GATEWAY_PORT in .env.",
     )
     parser.add_argument(
-        "--email", default=os.getenv("RAG_TEST_EMAIL", "1029719828@qq.com")
+        "--email", default=configured_value("RAG_TEST_EMAIL", dotenv_values)
     )
     parser.add_argument(
-        "--password", default=os.getenv("RAG_TEST_PASSWORD", "123123123123")
+        "--password", default=configured_value("RAG_TEST_PASSWORD", dotenv_values)
     )
     parser.add_argument(
         "--files-dir",
         type=Path,
-        default=Path(os.getenv("RAG_TEST_FILES_DIR", DEFAULT_FILES_DIR)),
+        default=Path(
+            configured_value("RAG_TEST_FILES_DIR", dotenv_values) or DEFAULT_FILES_DIR
+        ),
     )
     parser.add_argument(
         "--embedding-base-url",
-        default=os.getenv("RAG_TEST_EMBEDDING_BASE_URL", "http://127.0.0.1:31995/v1"),
+        default=configured_value("RAG_TEST_EMBEDDING_BASE_URL", dotenv_values)
+        or "http://127.0.0.1:31995/v1",
     )
     parser.add_argument(
         "--embedding-model",
-        default=os.getenv("RAG_TEST_EMBEDDING_MODEL", "Qwen3-Embedding-8B"),
+        default=configured_value("RAG_TEST_EMBEDDING_MODEL", dotenv_values)
+        or "Qwen3-Embedding-8B",
     )
     parser.add_argument(
         "--llm-base-url",
-        default=os.getenv("RAG_TEST_LLM_BASE_URL", "http://127.0.0.1:30018/v1"),
+        default=configured_value("RAG_TEST_LLM_BASE_URL", dotenv_values)
+        or "http://127.0.0.1:30018/v1",
     )
     parser.add_argument(
-        "--llm-model", default=os.getenv("RAG_TEST_LLM_MODEL", "Qwen3.8-27B-FP8")
+        "--llm-model",
+        default=configured_value("RAG_TEST_LLM_MODEL", dotenv_values)
+        or "Qwen3.8-27B-FP8",
     )
     parser.add_argument(
-        "--model-api-key", default=os.getenv("RAG_TEST_MODEL_API_KEY", "EMPTY")
+        "--model-api-key",
+        default=configured_value("RAG_TEST_MODEL_API_KEY", dotenv_values) or "EMPTY",
     )
     parser.add_argument("--request-timeout-seconds", type=float, default=120)
     parser.add_argument("--job-timeout-seconds", type=float, default=1_800)
@@ -1582,6 +1573,11 @@ def parse_args() -> Config:
     parser.add_argument("--keep-resources", action="store_true")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
+    require(bool(args.email), "required test configuration is missing: RAG_TEST_EMAIL")
+    require(
+        bool(args.password),
+        "required test configuration is missing: RAG_TEST_PASSWORD",
+    )
     require(args.request_timeout_seconds > 0, "request timeout must be positive")
     require(args.job_timeout_seconds > 0, "job timeout must be positive")
     require(args.poll_interval_seconds > 0, "poll interval must be positive")
@@ -1604,7 +1600,11 @@ def parse_args() -> Config:
 
 
 def main() -> int:
-    config = parse_args()
+    try:
+        config = parse_args()
+    except FlowError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 2
     flow = UserFlow(config)
     failure: Exception | None = None
     cleanup_errors: list[str] = []

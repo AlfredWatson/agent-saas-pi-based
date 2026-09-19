@@ -26,7 +26,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -38,6 +37,8 @@ from uuid import uuid4
 
 import httpx
 from openpyxl import Workbook
+
+from flow_env import configured_value, parse_dotenv
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,25 +60,6 @@ class FlowError(RuntimeError):
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise FlowError(message)
-
-
-def parse_dotenv(path: Path) -> dict[str, str]:
-    """Read just enough dotenv syntax to resolve the local Gateway URL."""
-    if not path.is_file():
-        return {}
-    values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        candidate = line.strip()
-        if not candidate or candidate.startswith("#") or "=" not in candidate:
-            continue
-        key, value = candidate.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        if key:
-            values[key] = value
-    return values
 
 
 def gateway_from_env_file() -> str:
@@ -793,11 +775,6 @@ class AgentUserFlow:
                 "events": self.events,
             }
         )
-
-
-def configured_value(name: str, dotenv_values: dict[str, str]) -> str | None:
-    """Prefer an explicit shell value, then use the repository-local .env."""
-    return os.getenv(name) or dotenv_values.get(name)
 
 
 def required_environment(name: str, dotenv_values: dict[str, str]) -> str:

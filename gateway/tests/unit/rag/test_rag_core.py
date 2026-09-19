@@ -12,6 +12,7 @@ from app.domain.rag.graph import (
 from app.integrations.rag import model_clients, processors
 from app.api.v1.rag.knowledge_bases import sanitized_stored_filename
 from app.db.rag.models import RagDocument
+from app.db.rag.startup import _migration_head
 from app.integrations.rag.file_storage import PostgresFileStorage
 from app.integrations.rag.processors import (
     DefaultDocumentProcessor,
@@ -227,3 +228,7 @@ def test_stage_handler_registry_is_explicit_and_extensible():
         "vectorization",
         "graph_extraction",
     }
+
+
+def test_rag_migration_head_resolves_from_the_layered_module_location():
+    assert _migration_head() == "0008_rag_four_stage"

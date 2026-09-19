@@ -29,6 +29,14 @@ and owns active Pi SDK sessions and JSONL history.
 6. In a separate process run `uv run python scripts/start_rag_worker.py` for
    four RAG jobs: parsing, chunking, embedding and graph extraction.
 
+To black-box test account registration, run `uv run python
+test/user_registration.py`. It creates a fresh account, verifies its default
+Workspace, login, and duplicate-registration rejection, then saves the account
+to `.env` as both the Agent and RAG test credentials. The Gateway has no
+user-deletion API, so the account is retained. After registration, run
+`test/agent_user_flow.py` or `test/rag_user_flow.py` without repeating the
+email and password configuration.
+
 The RAG API is scoped below each Workspace and is independent from the Agent
 Runtime. See [Multi-tenant RAG](docs/rag.md) for lifecycle and API examples.
 
