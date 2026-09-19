@@ -108,3 +108,4 @@ memory-bank
 .runtime-data/**
 /test/files/**
 /docker/volumes/**
+/tmp/**
