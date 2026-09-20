@@ -1,0 +1,90 @@
+# Standalone vector databases, with all persistent data under docker/volumes/.
+# Milvus services follow the official v3.0.1 standalone Compose topology.
+# MinIO is sourced from quay.io because the former Docker Hub repository was removed.
+services:
+  milvus-etcd:
+    container_name: pi-saas-milvus-etcd
+    image: quay.io/coreos/etcd:v3.5.25
+    command: >-
+      etcd -advertise-client-urls=http://127.0.0.1:2379
+      -listen-client-urls=http://0.0.0.0:2379
+      --data-dir=/etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    volumes:
+      - ./volumes/milvus/etcd:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  milvus-minio:
+    container_name: pi-saas-milvus-minio
+    image: quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z
+    command: minio server /minio_data --console-address ":9001"
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - ./volumes/milvus/minio:/minio_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+  milvus:
+    container_name: pi-saas-milvus
+    image: milvusdb/milvus:v3.0.1
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      MINIO_ADDRESS: milvus-minio:9000
+    ports:
+      - "127.0.0.1:19530:19530"
+      # Host 9091 is already owned by the existing Prometheus deployment.
+      - "127.0.0.1:19091:9091"
+    volumes:
+      - ./volumes/milvus/standalone:/var/lib/milvus
+    depends_on:
+      milvus-etcd:
+        condition: service_healthy
+      milvus-minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    restart: unless-stopped
+
+  qdrant:
+    container_name: pi-saas-qdrant
+    image: qdrant/qdrant:v1.19.1
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - ./volumes/qdrant:/qdrant/storage
+    restart: unless-stopped
+
+  chroma:
+    container_name: pi-saas-chroma
+    image: chromadb/chroma:1.5.9
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./volumes/chroma:/data
+    restart: unless-stopped
