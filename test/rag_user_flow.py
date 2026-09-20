@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import math
 import re
 import sys
@@ -35,6 +36,7 @@ from flow_env import configured_value, parse_dotenv
 
 
 ROOT = Path(__file__).resolve().parents[1]
+LOGGER = logging.getLogger("rag-user-flow")
 DEFAULT_FILES_DIR = ROOT / "test" / "files"
 FIXTURE_NAMES = (
     "doc-test-1.docx",
@@ -44,6 +46,7 @@ FIXTURE_NAMES = (
     "pdf-test-1.pdf",
     "pdf-test-2.pdf",
     "ppt-test-1.pptx",
+    "ppt-test-2.pptx",
     "table-test-1.xlsx",
     "table-test-3.xlsx",
 )
@@ -196,12 +199,23 @@ class UserFlow:
         self.client.close()
 
     def event(self, name: str, **details: Any) -> None:
+        redacted_details = redact(details)
         self.events.append(
             {
                 "at": datetime.now(UTC).isoformat(),
                 "name": name,
-                "details": redact(details),
+                "details": redacted_details,
             }
+        )
+        log_details = {
+            key: value
+            for key, value in redacted_details.items()
+            if key not in {"response", "resources", "state"}
+        }
+        LOGGER.info(
+            "%s %s",
+            name,
+            json.dumps(log_details, ensure_ascii=False, sort_keys=True),
         )
 
     def url(self, path: str) -> str:
@@ -1616,6 +1630,11 @@ def parse_args() -> Config:
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S%z",
+    )
     try:
         config = parse_args()
     except FlowError as exc:

@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -42,6 +43,7 @@ from flow_env import configured_value, parse_dotenv
 
 
 ROOT = Path(__file__).resolve().parents[1]
+LOGGER = logging.getLogger("agent-user-flow")
 SENSITIVE_KEYS = {
     "access_token",
     "api_key",
@@ -137,12 +139,25 @@ class AgentUserFlow:
         return value
 
     def event(self, name: str, **details: Any) -> None:
+        redacted_details = self.redact(details)
         self.events.append(
             {
                 "at": datetime.now(UTC).isoformat(),
                 "name": name,
-                "details": self.redact(details),
+                "details": redacted_details,
             }
+        )
+        log_details = {
+            key: value
+            for key, value in redacted_details.items()
+            if key not in {"response", "resources", "event_names"}
+        }
+        if "event_names" in redacted_details:
+            log_details["event_count"] = len(redacted_details["event_names"])
+        LOGGER.info(
+            "%s %s",
+            name,
+            json.dumps(log_details, ensure_ascii=False, sort_keys=True),
         )
 
     def url(self, path: str) -> str:
@@ -841,6 +856,11 @@ def parse_args() -> Config:
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S%z",
+    )
     try:
         config = parse_args()
     except FlowError as exc:
