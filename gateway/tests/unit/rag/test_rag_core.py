@@ -14,6 +14,7 @@ from app.api.v1.rag.knowledge_bases import sanitized_stored_filename
 from app.db.rag.models import RagDocument
 from app.db.rag.startup import _migration_head
 from app.integrations.rag.file_storage import PostgresFileStorage
+from app.integrations.rag.vector_store import collection_name
 from app.integrations.rag.processors import (
     DefaultDocumentProcessor,
     UnsupportedDocumentError,
@@ -142,8 +143,14 @@ def test_graph_normalization_property_merge_and_rrf_are_deterministic():
 def test_rag_backend_and_concurrency_settings_fail_fast():
     with pytest.raises(ValueError, match="FILE_BASE"):
         Settings(file_base="pm")
+    assert Settings(vector_base="pmcq").enabled_vector_backends == (
+        "postgresql",
+        "milvus",
+        "chroma",
+        "qdrant",
+    )
     with pytest.raises(ValueError, match="VECTOR_BASE"):
-        Settings(vector_base="pmc")
+        Settings(vector_base="pn")
     with pytest.raises(ValueError, match="GRAPH_BASE"):
         Settings(graph_base="pn")
     with pytest.raises(ValueError, match="default chunking concurrency"):
@@ -157,6 +164,16 @@ def test_rag_backend_and_concurrency_settings_fail_fast():
             postgres_password="database-secret",
             redis_password="replace-with-a-long-redis-password",
         )
+
+
+def test_external_vector_collection_name_is_deterministic_and_safe():
+    from uuid import UUID
+
+    name = collection_name(
+        Settings(rag_vector_collection_prefix="pi_saas_rag"),
+        UUID("12345678-1234-5678-1234-567812345678"),
+    )
+    assert name == "pi_saas_rag_12345678123456781234567812345678"
 
 
 def test_persisted_filename_uses_user_uuid_utc_date_and_safe_stem():

@@ -1,6 +1,6 @@
 # 多租户 RAG 后端
 
-RAG 是 Gateway 内独立的 Workspace 资源，不进入 `agent-runtime`。每个知识库固定绑定文件、blocks、chunks、向量和图谱后端；本版本五项均为 PostgreSQL。文件原文、blocks、chunks、向量、图谱和任务均位于同一 PostgreSQL 实例的 `rag` schema。Redis 只缓存可恢复的向量和图谱中间结果。内部 Gateway 分层、依赖方向和扩展方式见 [RAG 架构](rag-architecture.md)。
+RAG 是 Gateway 内独立的 Workspace 资源，不进入 `agent-runtime`。每个知识库固定绑定文件、blocks、chunks、向量和图谱后端。文件原文、blocks、chunks、图谱和任务位于 PostgreSQL 的 `rag` schema；向量可由知识库选择 PostgreSQL、Milvus、Chroma 或 Qdrant。Redis 只缓存可恢复的向量和图谱中间结果。内部 Gateway 分层、依赖方向和扩展方式见 [RAG 架构](rag-architecture.md)。
 
 ## 启动
 
@@ -22,7 +22,7 @@ uv run python scripts/start_rag_worker.py
 - PDF、Word、Excel、PPT、Markdown 的纯文本解析
 - fixed、regex、semantic 三种 chunking 策略
 
-`FILE_BASE=pm` 会在启动时明确失败；MinIO 尚未实现，也不会出现在 capabilities 中。
+`VECTOR_BASE` 使用 `p`、`m`、`c`、`q` 分别启用 PostgreSQL、Milvus、Chroma、Qdrant，且必须包含 `p`；例如 `VECTOR_BASE=pmcq`。Gateway 与 worker 会在启动时检查每个启用的向量服务，任一不可达即拒绝启动。文件、blocks、chunks 和图谱仍仅支持 PostgreSQL。
 
 ## 四阶段流程
 
@@ -69,7 +69,7 @@ chunking 配置可在上传后任何时候设置，但必须早于 chunking 任�
 | vectorization | chunks、已验证 embedding | Redis 按 chunk 保存已完成向量；重试只补缺失项并刷新 TTL。 | 所有 chunk 完成后单事务写入 vectors。 |
 | graph extraction | chunks、已验证 LLM | Redis 按 chunk 保存已抽取的节点和边；重试只补缺失项并刷新 TTL。 | 所有 chunk 完成后单事务写入图谱及证据。 |
 
-因此 parsing/chunking 的失败不会留下可查询的中间数据；向量和图谱任务失败时缓存仅用于恢复，检索也看不到部分最终数据。
+因此 parsing/chunking 的失败不会留下可查询的中间数据；向量和图谱任务失败时缓存仅用于恢复，检索也看不到部分最终数据。外部向量库按知识库使用独立集合，集合名由 `RAG_VECTOR_COLLECTION_PREFIX` 与知识库 UUID 构成；删除文档、vectors 或知识库会同步清理对应外部向量。
 
 ## 清理与复制
 
@@ -114,7 +114,7 @@ AUTH=(-H "Authorization: Bearer $TOKEN")
 curl -fsS "${AUTH[@]}" "$RAG_BASE/rag/capabilities" | jq .
 WORKSPACE_ID="$(curl -fsS "${AUTH[@]}" "$RAG_BASE/workspaces" | jq -r '.items[] | select(.is_current).id')"
 
-# 2. 创建后端均固定为 PostgreSQL 的知识库。
+# 2. 创建知识库；vector_backend 必须是 capabilities 当前返回的值。
 KB_ID="$(curl -fsS -X POST "${AUTH[@]}" \
   -H 'Content-Type: application/json' \
   --data '{"name":"minimal-rag","file_backend":"postgresql","block_backend":"postgresql","chunk_backend":"postgresql","vector_backend":"postgresql","graph_backend":"postgresql"}' \
@@ -180,6 +180,10 @@ uv run python scripts/start_rag_worker.py
 
 # terminal 4: address, account, and model defaults may be overridden with RAG_TEST_*
 uv run python test/rag_user_flow.py --report /tmp/rag-user-flow.json
+
+# Repeat with an enabled external backend; the flow creates and cleans up its
+# own knowledge bases and their external vector collections.
+uv run python test/rag_user_flow.py --vector-backend milvus --report /tmp/rag-milvus-flow.json
 ```
 
 该 flow 覆盖五种文件、四阶段、失败缓存续跑、三种检索、图谱合并、知识库复制和级联删除；

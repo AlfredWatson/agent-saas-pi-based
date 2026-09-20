@@ -15,6 +15,7 @@ from .core.config import get_settings
 from .db.session import engine
 from .db.rag.startup import verify_rag_database
 from .integrations.rag.cache import RagCache
+from .integrations.rag.vector_store import verify_vector_backends
 from .services.runtime_locator import RuntimeUnavailableError
 
 # Uvicorn configures this logger at INFO by default; application-module loggers
@@ -46,6 +47,7 @@ async def lifespan(_: FastAPI):
             )
         )
     await verify_rag_database()
+    await verify_vector_backends(settings)
     cache = RagCache()
     try:
         await cache.ping()

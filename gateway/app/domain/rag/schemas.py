@@ -33,7 +33,7 @@ class KnowledgeBaseCreate(BaseModel):
     file_backend: Literal["postgresql"]
     block_backend: Literal["postgresql"]
     chunk_backend: Literal["postgresql"]
-    vector_backend: Literal["postgresql"]
+    vector_backend: Literal["postgresql", "milvus", "chroma", "qdrant"]
     graph_backend: Literal["postgresql"]
 
 

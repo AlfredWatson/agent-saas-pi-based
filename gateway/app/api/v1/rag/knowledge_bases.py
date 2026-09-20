@@ -1,15 +1,17 @@
 # ruff: noqa: F403, F405
 from .common import *  # noqa: F403
+from app.integrations.rag.vector_store import get_vector_store
 
 
 @router.get("/rag/capabilities")
 async def capabilities(_: User = Depends(current_user)):
+    settings = get_settings()
     return {
         "file_backends": ["postgresql"],
         "block_backends": ["postgresql"],
         "chunk_backends": ["postgresql"],
         "document_processing_backends": ["default"],
-        "vector_backends": ["postgresql"],
+        "vector_backends": list(settings.enabled_vector_backends),
         "graph_backends": ["postgresql"],
         "document_extensions": sorted(SUPPORTED_EXTENSIONS),
         "chunking_strategies": {
@@ -28,6 +30,8 @@ async def create_knowledge_base(
 ):
     await owned_workspace(db, workspace_id, user.id)
     settings = get_settings()
+    if body.vector_backend not in settings.enabled_vector_backends:
+        raise HTTPException(422, "vector_backend_not_enabled")
     kb = KnowledgeBase(
         user_id=user.id,
         workspace_id=workspace_id,
@@ -159,9 +163,7 @@ async def set_model(
             job.config_snapshot.get("strategy") == "semantic" for job in semantic_jobs
         ):
             raise HTTPException(409, "semantic_chunking_jobs_active")
-    if kind == "embedding" and await db.scalar(
-        select(ChunkVector.id).where(ChunkVector.knowledge_base_id == kb.id).limit(1)
-    ):
+    if kind == "embedding" and await get_vector_store(kb, db).has_vectors():
         raise HTTPException(409, "embedding_model_locked_by_vectors")
     if kind == "embedding":
         dimension = await verify_embedding(body)

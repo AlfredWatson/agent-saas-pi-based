@@ -39,6 +39,23 @@ class Settings(BaseSettings):
     document_processing_service: str = "default"
     vector_base: str = "p"
     graph_base: str = "p"
+    rag_vector_collection_prefix: str = Field(
+        default="pi_saas_rag", pattern=r"^[A-Za-z][A-Za-z0-9_]{2,80}$"
+    )
+    rag_vector_store_timeout_seconds: int = Field(default=10, ge=1, le=120)
+    rag_vector_store_batch_size: int = Field(default=256, ge=1, le=10_000)
+    milvus_uri: str = "http://127.0.0.1:19530"
+    milvus_token: str = ""
+    milvus_database: str = "default"
+    chroma_host: str = "127.0.0.1"
+    chroma_port: int = Field(default=8000, gt=0, le=65535)
+    chroma_ssl: bool = False
+    chroma_tenant: str = "default_tenant"
+    chroma_database: str = "default_database"
+    qdrant_url: str = "http://127.0.0.1:6333"
+    qdrant_api_key: str = ""
+    qdrant_grpc_port: int = Field(default=6334, gt=0, le=65535)
+    qdrant_prefer_grpc: bool = False
     redis_host: str = "127.0.0.1"
     redis_port: int = Field(default=6379, gt=0, le=65535)
     redis_username: str = Field(default="admin", pattern=r"^[A-Za-z0-9_-]+$")
@@ -117,8 +134,15 @@ class Settings(BaseSettings):
             )
         if self.file_base != "p":
             raise ValueError("FILE_BASE currently supports only 'p' (postgresql)")
-        if self.vector_base != "p":
-            raise ValueError("VECTOR_BASE currently supports only 'p' (postgresql)")
+        if (
+            not self.vector_base
+            or "p" not in self.vector_base
+            or len(set(self.vector_base)) != len(self.vector_base)
+            or set(self.vector_base) - {"p", "m", "c", "q"}
+        ):
+            raise ValueError(
+                "VECTOR_BASE must contain unique backend codes from 'pmcq' and include 'p'"
+            )
         if self.graph_base != "p":
             raise ValueError("GRAPH_BASE currently supports only 'p' (postgresql)")
         if self.chunk_overlap_token_size >= self.chunk_max_token_size:
@@ -150,6 +174,11 @@ class Settings(BaseSettings):
             if default_value > maximum:
                 raise ValueError(f"default {label} concurrency exceeds its maximum")
         return self
+
+    @property
+    def enabled_vector_backends(self) -> tuple[str, ...]:
+        names = {"p": "postgresql", "m": "milvus", "c": "chroma", "q": "qdrant"}
+        return tuple(names[code] for code in "pmcq" if code in self.vector_base)
 
     @property
     def database_url(self) -> URL:

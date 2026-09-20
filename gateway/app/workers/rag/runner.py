@@ -15,7 +15,6 @@ from app.core.config import get_settings
 from app.core.encryption import encrypt
 from app.db.rag.models import (
     Chunk,
-    ChunkVector,
     DocumentBlock,
     GraphArtifact,
     GraphEdge,
@@ -40,7 +39,7 @@ from app.integrations.rag.model_clients import (
     input_from_stored,
 )
 from app.integrations.rag.processors import get_document_processor
-from app.integrations.rag.vector_store import PostgresVectorStore
+from app.integrations.rag.vector_store import get_vector_store, verify_vector_backends
 from app.workers.rag.handlers import stage_handlers
 
 logger = logging.getLogger("uvicorn.error")
@@ -75,6 +74,7 @@ class RagWorker:
     async def run_forever(self) -> None:
         logger.info("RAG worker %s started", self.worker_id)
         await verify_rag_database()
+        await verify_vector_backends(self.settings)
         await self.cache.ping()
         while True:
             self.tasks = {task for task in self.tasks if not task.done()}
@@ -563,7 +563,10 @@ class RagWorker:
                 db, job, index + 1, len(chunks), f"embedded {index + 1}/{len(chunks)}"
             )
         await self._assert_job_active(db, job, lock=True)
-        store = PostgresVectorStore(db, job.knowledge_base_id, embeddings)
+        kb = await db.get(KnowledgeBase, job.knowledge_base_id)
+        if kb is None:
+            raise RuntimeError("knowledge_base_not_found")
+        store = get_vector_store(kb, db, embeddings)
         await store.replace_document_vectors(document.id, config.fingerprint, vectors)
 
     async def process_graph(self, db: AsyncSession, job: ProcessingJob) -> None:
@@ -814,21 +817,7 @@ class RagWorker:
             db.add(copied)
             await db.flush()
             chunk_map[chunk.id] = copied
-        for vector in (
-            await db.scalars(
-                select(ChunkVector).where(ChunkVector.knowledge_base_id == source.id)
-            )
-        ).all():
-            db.add(
-                ChunkVector(
-                    knowledge_base_id=target.id,
-                    document_id=document_map[vector.document_id].id,
-                    chunk_id=chunk_map[vector.chunk_id].id,
-                    model_fingerprint=vector.model_fingerprint,
-                    dimension=vector.dimension,
-                    embedding=vector.embedding,
-                )
-            )
+        await get_vector_store(source, db).copy_to(target, chunk_map)
         artifact_map: dict[UUID, GraphArtifact] = {}
         source_artifacts = list(
             (
@@ -970,6 +959,7 @@ class RagWorker:
         for document in documents:
             await self.cache.delete_document(kb.id, document.id)
             await get_file_storage(document.storage_backend, db).delete(document)
+        await get_vector_store(kb, db).delete_knowledge_base()
         await db.delete(kb)
         await db.commit()
 

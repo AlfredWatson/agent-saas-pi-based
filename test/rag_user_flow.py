@@ -58,11 +58,10 @@ MIME_TYPES = {
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".md": "text/markdown",
 }
-BACKENDS = {
+STATIC_BACKENDS = {
     "file_backend": "postgresql",
     "block_backend": "postgresql",
     "chunk_backend": "postgresql",
-    "vector_backend": "postgresql",
     "graph_backend": "postgresql",
 }
 SENSITIVE_KEYS = {
@@ -157,6 +156,7 @@ class Config:
     llm_base_url: str
     llm_model: str
     model_api_key: str
+    vector_backend: str
     request_timeout_seconds: float
     job_timeout_seconds: float
     poll_interval_seconds: float
@@ -182,6 +182,10 @@ class UserFlow:
         self.primary_documents: dict[str, dict[str, Any]] = {}
         self.events: list[dict[str, Any]] = []
         self.resources: dict[str, Any] = {}
+
+    @property
+    def backends(self) -> dict[str, str]:
+        return {**STATIC_BACKENDS, "vector_backend": self.config.vector_backend}
 
     @property
     def headers(self) -> dict[str, str]:
@@ -337,13 +341,17 @@ class UserFlow:
             "file_backends",
             "block_backends",
             "chunk_backends",
-            "vector_backends",
             "graph_backends",
         ):
             require(
                 capabilities.get(key) == ["postgresql"],
                 f"unexpected {key}: {capabilities.get(key)!r}",
             )
+        require(
+            self.config.vector_backend in capabilities.get("vector_backends", []),
+            f"configured vector backend is unavailable: {self.config.vector_backend!r}; "
+            f"available={capabilities.get('vector_backends')!r}",
+        )
         require(
             capabilities.get("document_processing_backends") == ["default"],
             "default document processor capability is missing",
@@ -380,7 +388,7 @@ class UserFlow:
         )
 
         for label in ("primary", "isolation"):
-            body = {"name": f"rag-{label}-{run_suffix}", **BACKENDS}
+            body = {"name": f"rag-{label}-{run_suffix}", **self.backends}
             knowledge_base = self.json_request(
                 "POST",
                 f"/workspaces/{workspace_id}/knowledge-bases",
@@ -392,9 +400,9 @@ class UserFlow:
             require(isinstance(kb_id, str), f"{label} knowledge base did not return id")
             require(
                 all(
-                    knowledge_base.get(key) == value for key, value in BACKENDS.items()
+                    knowledge_base.get(key) == value for key, value in self.backends.items()
                 ),
-                f"{label} knowledge base did not retain PostgreSQL backends",
+                f"{label} knowledge base did not retain the selected backends",
             )
             if label == "primary":
                 self.primary_kb_id = kb_id
@@ -421,7 +429,7 @@ class UserFlow:
         require(len(created) == 2, "could not find exactly two new knowledge bases")
         require(
             all(
-                {key: item.get(key) for key in BACKENDS} == BACKENDS for item in created
+                {key: item.get(key) for key in self.backends} == self.backends for item in created
             ),
             "created knowledge bases have differing storage configurations",
         )
@@ -1188,7 +1196,7 @@ class UserFlow:
         require(
             all(
                 source.get(key) == target.get(key) == value
-                for key, value in BACKENDS.items()
+                for key, value in self.backends.items()
             ),
             "copy changed storage backend configuration",
         )
@@ -1567,6 +1575,13 @@ def parse_args() -> Config:
         "--model-api-key",
         default=configured_value("RAG_TEST_MODEL_API_KEY", dotenv_values) or "EMPTY",
     )
+    parser.add_argument(
+        "--vector-backend",
+        choices=("postgresql", "milvus", "chroma", "qdrant"),
+        default=configured_value("RAG_TEST_VECTOR_BACKEND", dotenv_values)
+        or "postgresql",
+        help="Vector backend for every knowledge base created by this flow.",
+    )
     parser.add_argument("--request-timeout-seconds", type=float, default=120)
     parser.add_argument("--job-timeout-seconds", type=float, default=1_800)
     parser.add_argument("--poll-interval-seconds", type=float, default=2)
@@ -1591,6 +1606,7 @@ def parse_args() -> Config:
         llm_base_url=normalized_api_base(args.llm_base_url),
         llm_model=args.llm_model,
         model_api_key=args.model_api_key,
+        vector_backend=args.vector_backend,
         request_timeout_seconds=args.request_timeout_seconds,
         job_timeout_seconds=args.job_timeout_seconds,
         poll_interval_seconds=args.poll_interval_seconds,

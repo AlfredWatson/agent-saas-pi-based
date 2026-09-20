@@ -2,6 +2,7 @@
 from .common import *  # noqa: F403
 from .knowledge_bases import sanitized_stored_filename
 from app.db.rag.repositories import RagRepository
+from app.integrations.rag.vector_store import get_vector_store
 
 
 @router.post(
@@ -205,13 +206,16 @@ async def delete_document(
     )
     await delete_graph_for_document(db, document)
     await remove_document_cache(kb.id, document.id)
+    await get_vector_store(kb, db).delete_document_vectors(document.id)
     await get_file_storage(document.storage_backend, db).delete(document)
     await db.delete(document)
     await db.commit()
 
 
-async def delete_vectors_for_document(db: AsyncSession, document: RagDocument) -> None:
-    await db.execute(delete(ChunkVector).where(ChunkVector.document_id == document.id))
+async def delete_vectors_for_document(
+    db: AsyncSession, kb: KnowledgeBase, document: RagDocument
+) -> None:
+    await get_vector_store(kb, db).delete_document_vectors(document.id)
     document.vectorization_status = "not_started"
     document.vectorization_progress = 0
     document.vectorization_message = None
@@ -279,7 +283,7 @@ async def delete_document_blocks(
         document.id,
         ("parsing", "chunking", "vectorization", "graph_extraction"),
     )
-    await delete_vectors_for_document(db, document)
+    await delete_vectors_for_document(db, kb, document)
     await delete_graph_for_document(db, document)
     await db.execute(delete(Chunk).where(Chunk.document_id == document.id))
     await db.execute(
@@ -337,7 +341,7 @@ async def delete_document_vectors(
         raise HTTPException(409, "knowledge_base_unavailable")
     document = await owned_document(db, kb.id, document_id, lock=True)
     await ensure_no_active_document_jobs(db, document.id, ("vectorization",))
-    await delete_vectors_for_document(db, document)
+    await delete_vectors_for_document(db, kb, document)
     await remove_document_cache_kind(kb.id, document.id, "vector")
     await db.commit()
 
@@ -381,7 +385,7 @@ async def delete_document_chunks(
     await ensure_no_active_document_jobs(
         db, document.id, ("chunking", "vectorization", "graph_extraction")
     )
-    await delete_vectors_for_document(db, document)
+    await delete_vectors_for_document(db, kb, document)
     await delete_graph_for_document(db, document)
     await db.execute(delete(Chunk).where(Chunk.document_id == document.id))
     document.processing_generation += 1

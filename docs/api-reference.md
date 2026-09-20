@@ -358,7 +358,7 @@ curl -N -X POST "http://127.0.0.1:8000/api/v1/sessions/$SESSION_ID/messages:stre
 
 > **四阶段 pipeline 版本。** 本节中旧的知识库级 `document_backend`、
 > `chunking_strategy` 与 `chunking_config` 已废弃。当前可执行的 RAG 请求契约以
-> [`rag.md`](rag.md) 为准：创建知识库需提交五个 PostgreSQL 后端；上传返回逐文件
+> [`rag.md`](rag.md) 为准：创建知识库需提交五个后端字段，其中向量后端必须为当前部署启用的值；上传返回逐文件
 > 结果；parsing 和 chunking 是两个独立任务，文档级 chunking 配置必须在 chunking
 > 入队前确定。完整 OpenAPI 可由运行中的 `/openapi.json` 获取。
 
@@ -378,7 +378,7 @@ RAG 不提供回答生成接口，检索结果供后续应用消费。
 ### `GET /rag/capabilities`
 
 返回当前部署实际启用的处理和存储后端、可上传扩展名及各切分策略的默认配置。应先调用此接口，
-再将后端选择展示给用户。本期仅返回内置文档处理与 PostgreSQL 向量/图谱存储。
+再将后端选择展示给用户。文件、blocks、chunks 和图谱当前为 PostgreSQL；`vector_backends` 由 `VECTOR_BASE` 决定。
 
 ```json
 {
@@ -386,7 +386,7 @@ RAG 不提供回答生成接口，检索结果供后续应用消费。
   "block_backends":["postgresql"],
   "chunk_backends":["postgresql"],
   "document_processing_backends":["default"],
-  "vector_backends":["postgresql"],
+  "vector_backends":["postgresql","milvus","chroma","qdrant"],
   "graph_backends":["postgresql"],
   "document_extensions":[".doc",".docx",".md",".markdown",".pdf",".ppt",".pptx",".xls",".xlsx"],
   "chunking_strategies":{
@@ -426,7 +426,7 @@ RAG 不提供回答生成接口，检索结果供后续应用消费。
 }
 ```
 
-五个后端字段必须显式提供；只能取 capabilities 中的值，创建后不可更改。同一
+五个后端字段必须显式提供；`vector_backend` 只能取 capabilities 中启用的值，其余四项当前只能为 `postgresql`，创建后不可更改。同一
 Workspace 名称重复返回 `409 knowledge_base_exists`。
 
 ### `GET /workspaces/{workspace_id}/knowledge-bases`

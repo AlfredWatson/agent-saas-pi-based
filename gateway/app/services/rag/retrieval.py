@@ -15,12 +15,13 @@ from app.db.rag.models import (
     GraphEdge,
     GraphEvidence,
     GraphNode,
+    KnowledgeBase,
     RagModelConfig,
 )
 from app.domain.rag.graph import reciprocal_rank_fusion
 from app.domain.rag.schemas import RetrievalInput
 from app.integrations.rag.model_clients import embedding_client, input_from_stored
-from app.integrations.rag.vector_store import PostgresVectorStore
+from app.integrations.rag.vector_store import get_vector_store
 
 
 def tokenize(text: str) -> list[str]:
@@ -64,11 +65,11 @@ async def vector_retrieve(
     db: AsyncSession, knowledge_base_id: UUID, body: RetrievalInput
 ) -> list[dict]:
     config = await _embedding_config(db, knowledge_base_id)
-    store = PostgresVectorStore(
-        db,
-        knowledge_base_id,
-        embedding_client(input_from_stored(config)),
-        body.document_ids,
+    kb = await db.get(KnowledgeBase, knowledge_base_id)
+    if kb is None:
+        raise ValueError("knowledge_base_not_found")
+    store = get_vector_store(
+        kb, db, embedding_client(input_from_stored(config)), body.document_ids
     )
     rows = await store.asimilarity_search_with_relevance_scores(
         body.query,
@@ -85,11 +86,11 @@ async def hybrid_retrieve(
     db: AsyncSession, knowledge_base_id: UUID, body: RetrievalInput
 ) -> list[dict]:
     config = await _embedding_config(db, knowledge_base_id)
-    store = PostgresVectorStore(
-        db,
-        knowledge_base_id,
-        embedding_client(input_from_stored(config)),
-        body.document_ids,
+    kb = await db.get(KnowledgeBase, knowledge_base_id)
+    if kb is None:
+        raise ValueError("knowledge_base_not_found")
+    store = get_vector_store(
+        kb, db, embedding_client(input_from_stored(config)), body.document_ids
     )
     vector_rows = await store.asimilarity_search_with_relevance_scores(
         body.query, k=body.vector_k, score_threshold=body.min_score

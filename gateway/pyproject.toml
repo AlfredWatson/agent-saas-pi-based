@@ -31,6 +31,9 @@ dependencies = [
     "rank-bm25>=0.2,<1",
     "jieba>=0.42,<1",
     "tiktoken>=0.11,<1",
+    "pymilvus==3.0.1",
+    "chromadb==1.5.9",
+    "qdrant-client==1.19.1",
 ]
 
 [tool.pytest.ini_options]

@@ -24,3 +24,13 @@ def test_model_read_contract_never_contains_api_key():
         "/api/v1/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/models"
     ]["get"]
     assert "api_key" not in str(operation)
+
+
+def test_knowledge_base_schema_exposes_all_supported_vector_backends():
+    schema = app.openapi()["components"]["schemas"]["KnowledgeBaseCreate"]
+    assert schema["properties"]["vector_backend"]["enum"] == [
+        "postgresql",
+        "milvus",
+        "chroma",
+        "qdrant",
+    ]
