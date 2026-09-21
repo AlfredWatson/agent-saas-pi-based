@@ -25,6 +25,9 @@ def test_tenant_directory_is_mounted_at_the_runtime_data_root(tmp_path):
         runtime_docker_image="runtime:test",
         runtime_docker_network="runtime-network",
         runtime_shared_secret="runtime-secret",
+        runtime_gateway_base_url="http://host.docker.internal:8000",
+        runtime_rag_request_timeout_seconds=30,
+        runtime_rag_result_max_bytes=65536,
         runtime_memory_limit="1g",
         runtime_nano_cpus=1_000_000_000,
         runtime_pids_limit=256,
@@ -34,11 +37,15 @@ def test_tenant_directory_is_mounted_at_the_runtime_data_root(tmp_path):
     locator.client = SimpleNamespace(containers=containers)
     locator._container_name = lambda _: "runtime"
 
-    locator._create_container(user_id)
+    locator._create_container(user_id, "rag-runtime-secret")
 
     assert containers.kwargs["environment"] == {
         "TENANT_ID": str(user_id),
         "RUNTIME_SHARED_SECRET": "runtime-secret",
+        "RUNTIME_RAG_SHARED_SECRET": "rag-runtime-secret",
+        "RUNTIME_GATEWAY_BASE_URL": "http://host.docker.internal:8000",
+        "RUNTIME_RAG_REQUEST_TIMEOUT_SECONDS": "30",
+        "RUNTIME_RAG_RESULT_MAX_BYTES": "65536",
         "WORKSPACE_STORAGE_LIMIT_MB": "1024",
         "WORKSPACE_FILE_MAX_MB": "100",
     }
@@ -47,3 +54,4 @@ def test_tenant_directory_is_mounted_at_the_runtime_data_root(tmp_path):
         "mode": "rw",
     }
     assert (tmp_path / ".runtime-data" / "tenants" / str(user_id)).is_dir()
+    assert containers.kwargs["extra_hosts"] == {"host.docker.internal": "host-gateway"}

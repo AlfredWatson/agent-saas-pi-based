@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...api.dependencies import current_user
 from ...clients.agent_runtime import RuntimeClient
 from ...core.encryption import decrypt
-from ...db.models import AgentProfile, AgentRun, AgentSession, ChatMessage, ProviderBinding, User, Workspace
+from ...db.models import AgentProfile, AgentRun, AgentSession, AgentSessionKnowledgeBase, ChatMessage, ProviderBinding, User, Workspace
+from ...db.rag.models import KnowledgeBase
 from ...db.session import SessionLocal, get_db
 from ...services.tool_payloads import safe_tool_content, safe_tool_payload
 from ...core.config import get_settings
@@ -22,7 +23,19 @@ from .workspaces import current_workspace, enforce_workspace_storage_limit
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 _subscribers: dict[UUID, set[asyncio.Queue[tuple[str, dict]]]] = {}
 
-class SessionInput(BaseModel): profile_id: UUID; workspace_id: UUID | None = None
+class SessionInput(BaseModel):
+    profile_id: UUID
+    workspace_id: UUID | None = None
+    knowledge_base_ids: list[UUID] = Field(default_factory=list, max_length=20)
+
+    @field_validator("knowledge_base_ids")
+    @classmethod
+    def unique_knowledge_base_ids(cls, value: list[UUID]) -> list[UUID]:
+        if len(set(value)) != len(value):
+            raise ValueError("duplicate_knowledge_base_id")
+        return value
+
+
 class MessageInput(BaseModel): content: str = Field(min_length=1, max_length=100_000)
 
 async def owned(session_id: UUID, user: User, db: AsyncSession) -> AgentSession:
@@ -36,7 +49,36 @@ async def runtime_payload(db: AsyncSession, session: AgentSession, user_id: UUID
     if not profile or not workspace or workspace.status != "active": raise HTTPException(422, "invalid_session_configuration")
     binding = await db.scalar(select(ProviderBinding).where(ProviderBinding.id == profile.provider_binding_id, ProviderBinding.user_id == user_id, ProviderBinding.status == "active"))
     if not binding: raise HTTPException(422, "invalid_binding")
-    return {"workspace_key": workspace.storage_key, "model_id": profile.model_id, "thinking_level": profile.thinking_level, "provider_id": binding.provider_id, "api_key": decrypt(binding.ciphertext, binding.nonce, f"{user_id}:{binding.id}:{binding.provider_id}".encode()), "session_file_key": session.pi_session_file_key}
+    knowledge_bases = list(
+        (
+            await db.execute(
+                select(KnowledgeBase.id, KnowledgeBase.name)
+                .join(
+                    AgentSessionKnowledgeBase,
+                    AgentSessionKnowledgeBase.knowledge_base_id == KnowledgeBase.id,
+                )
+                .where(
+                    AgentSessionKnowledgeBase.session_id == session.id,
+                    KnowledgeBase.user_id == user_id,
+                    KnowledgeBase.workspace_id == workspace.id,
+                    KnowledgeBase.status == "active",
+                )
+                .order_by(KnowledgeBase.name, KnowledgeBase.id)
+            )
+        ).all()
+    )
+    return {
+        "workspace_key": workspace.storage_key,
+        "model_id": profile.model_id,
+        "thinking_level": profile.thinking_level,
+        "provider_id": binding.provider_id,
+        "api_key": decrypt(binding.ciphertext, binding.nonce, f"{user_id}:{binding.id}:{binding.provider_id}".encode()),
+        "session_file_key": session.pi_session_file_key,
+        "knowledge_bases": [
+            {"id": str(knowledge_base_id), "name": name}
+            for knowledge_base_id, name in knowledge_bases
+        ],
+    }
 
 async def publish(run_id: UUID, name: str, data: dict) -> None:
     for queue in list(_subscribers.get(run_id, set())):
@@ -174,15 +216,58 @@ async def create_session(body: SessionInput, user: User = Depends(current_user),
     else:
         workspace = await db.scalar(select(Workspace).where(Workspace.id == body.workspace_id, Workspace.user_id == user.id, Workspace.status == "active"))
     if profile is None or workspace is None: raise HTTPException(422, "invalid_profile_or_workspace")
+    if body.knowledge_base_ids and get_settings().runtime_gateway_base_url is None:
+        raise HTTPException(409, "agent_rag_unavailable")
+    knowledge_bases: list[KnowledgeBase] = []
+    if body.knowledge_base_ids:
+        knowledge_bases = list(
+            (
+                await db.scalars(
+                    select(KnowledgeBase).where(
+                        KnowledgeBase.id.in_(body.knowledge_base_ids),
+                        KnowledgeBase.user_id == user.id,
+                        KnowledgeBase.workspace_id == workspace.id,
+                        KnowledgeBase.status == "active",
+                    )
+                )
+            ).all()
+        )
+        if len(knowledge_bases) != len(body.knowledge_base_ids):
+            raise HTTPException(422, "invalid_knowledge_base_binding")
     session = AgentSession(user_id=user.id, profile_id=profile.id, workspace_id=workspace.id)
-    db.add(session); await db.commit()
+    db.add(session)
+    await db.flush()
+    db.add_all(
+        AgentSessionKnowledgeBase(
+            session_id=session.id, knowledge_base_id=knowledge_base_id
+        )
+        for knowledge_base_id in body.knowledge_base_ids
+    )
+    await db.commit()
     # Runtime creation is lazy; this avoids passing a key until an actual chat.
-    return {"id": str(session.id), "status": session.status}
+    return {
+        "id": str(session.id),
+        "status": session.status,
+        "knowledge_base_ids": [str(item) for item in body.knowledge_base_ids],
+    }
 
 @router.get("")
 async def list_sessions(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     rows = (await db.scalars(select(AgentSession).where(AgentSession.user_id == user.id))).all()
-    return {"items": [{"id": str(x.id), "status": x.status, "title": x.title} for x in rows]}
+    bindings = list(
+        (
+            await db.execute(
+                select(
+                    AgentSessionKnowledgeBase.session_id,
+                    AgentSessionKnowledgeBase.knowledge_base_id,
+                ).where(AgentSessionKnowledgeBase.session_id.in_([item.id for item in rows]))
+            )
+        ).all()
+    ) if rows else []
+    by_session: dict[UUID, list[str]] = {item.id: [] for item in rows}
+    for session_id, knowledge_base_id in bindings:
+        by_session[session_id].append(str(knowledge_base_id))
+    return {"items": [{"id": str(x.id), "status": x.status, "title": x.title, "knowledge_base_ids": sorted(by_session[x.id])} for x in rows]}
 
 @router.get("/{session_id}/messages")
 async def messages(session_id: UUID, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):

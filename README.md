@@ -37,8 +37,11 @@ user-deletion API, so the account is retained. After registration, run
 `test/agent_user_flow.py` or `test/rag_user_flow.py` without repeating the
 email and password configuration.
 
-The RAG API is scoped below each Workspace and is independent from the Agent
-Runtime. See [Multi-tenant RAG](docs/rag.md) for lifecycle and API examples.
+The RAG API is scoped below each Workspace. A Session may explicitly bind
+Workspace knowledge bases and expose them to Pi as a constrained `rag_search`
+tool; Gateway remains the only component allowed to access RAG storage and
+models. See [Multi-tenant RAG](docs/rag.md) and [Runtime image delivery](docs/runtime-image.md)
+for lifecycle, internal-network, and image-import requirements.
 
 The default Runtime catalog is intentionally limited. A production deployment
 must use a dedicated tenant container, a real secret store, an LLM gateway or

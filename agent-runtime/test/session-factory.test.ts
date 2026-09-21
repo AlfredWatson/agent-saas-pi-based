@@ -12,7 +12,8 @@ test("Faux sessions use stable tenant-agnostic data paths and Pi default coding 
 	const { createSession, deleteWorkspaceData, ensureRuntimeHome, InvalidSessionFileKeyError } = await import("../src/sessions/session-factory.js");
 	const { deleteWorkspaceFile, InvalidWorkspaceFilePathError, listWorkspaceFiles, uploadWorkspaceFile, WorkspaceFileExistsError, WorkspaceFileNotFoundError, UnsupportedWorkspaceFileTypeError } = await import("../src/workspaces/file-storage.js");
 	await ensureRuntimeHome();
-	const managed = await createSession("00000000-0000-0000-0000-000000000001", { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", thinking_level: "low" });
+	const sessionId = "00000000-0000-0000-0000-000000000002";
+	const managed = await createSession("00000000-0000-0000-0000-000000000001", sessionId, { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", thinking_level: "low" });
 	expect(managed.session.agent.state.tools.map((tool) => tool.name).sort()).toEqual(["bash", "edit", "read", "write"]);
 	const events: string[] = [];
 	const stop = managed.session.subscribe((event) => events.push(event.type));
@@ -28,11 +29,11 @@ test("Faux sessions use stable tenant-agnostic data paths and Pi default coding 
 	await expect(access(join(root, "workspaces", "workspace"))).resolves.toBeUndefined();
 	await expect(access(join(root, "tenants", "00000000-0000-0000-0000-000000000001"))).rejects.toThrow();
 
-	const resumed = await createSession("00000000-0000-0000-0000-000000000001", { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", session_file_key: managed.sessionFile });
+	const resumed = await createSession("00000000-0000-0000-0000-000000000001", sessionId, { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", session_file_key: managed.sessionFile });
 	expect(resumed.sessionFile).toBe(managed.sessionFile);
 	resumed.session.dispose();
-	await expect(createSession("00000000-0000-0000-0000-000000000001", { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", session_file_key: "../outside.jsonl" })).rejects.toBeInstanceOf(InvalidSessionFileKeyError);
-	await expect(createSession("00000000-0000-0000-0000-000000000001", { workspace_key: "../outside", provider_id: "faux", api_key: "unused", model_id: "faux-1" })).rejects.toThrow("invalid_workspace_key");
+	await expect(createSession("00000000-0000-0000-0000-000000000001", sessionId, { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", session_file_key: "../outside.jsonl" })).rejects.toBeInstanceOf(InvalidSessionFileKeyError);
+	await expect(createSession("00000000-0000-0000-0000-000000000001", sessionId, { workspace_key: "../outside", provider_id: "faux", api_key: "unused", model_id: "faux-1" })).rejects.toThrow("invalid_workspace_key");
 
 	await mkdir(join(root, "workspaces", "other"), { recursive: true });
 	await writeFile(join(root, "workspaces", "other", "keep.txt"), "keep");

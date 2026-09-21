@@ -278,20 +278,31 @@ Binding 必须属于当前用户且是 `active`：
 
 ### `POST /sessions`
 
-创建逻辑 Session，不会立刻将 Provider 密钥交给 Runtime，也不会强制创建容器。
+创建逻辑 Session，不会立刻将 Provider 密钥交给 Runtime，也不会强制创建容器。可选
+`knowledge_base_ids` 是该 Session 固定可调用的知识库白名单；每一项都必须属于同一
+用户和 Workspace，绑定后不可修改，需更换知识库时创建新 Session。
 
 ```json
-{"profile_id":"<profile-uuid>","workspace_id":"<workspace-uuid>"}
+{
+  "profile_id":"<profile-uuid>",
+  "workspace_id":"<workspace-uuid>",
+  "knowledge_base_ids":["<knowledge-base-uuid>"]
+}
 ```
 
-`workspace_id` 可以省略，此时使用当前 Workspace（新用户默认为 `default`）。成功：`201 {"id":"<session-uuid>","status":"ready"}`。任一 ID 不属于当前用户时为 `422 invalid_profile_or_workspace`。
+`workspace_id` 可以省略，此时使用当前 Workspace（新用户默认为 `default`）。省略
+`knowledge_base_ids` 或传空数组不会注册 RAG 工具；最多 20 项且不得重复。未配置
+`RUNTIME_GATEWAY_BASE_URL` 时，带知识库绑定的请求返回 `409 agent_rag_unavailable`；
+越权、跨 Workspace、失效或不存在的知识库统一返回 `422 invalid_knowledge_base_binding`。
+成功：`201 {"id":"<session-uuid>","status":"ready","knowledge_base_ids":[...]}`。
+任一 Profile/Workspace ID 不属于当前用户时为 `422 invalid_profile_or_workspace`。
 
 ### `GET /sessions`
 
 轻量会话列表：
 
 ```json
-{"items":[{"id":"<uuid>","status":"ready","title":null}]}
+{"items":[{"id":"<uuid>","status":"ready","title":null,"knowledge_base_ids":["<uuid>"]}]}
 ```
 
 完整历史不包含在这里，应使用下一接口。
@@ -335,6 +346,12 @@ Binding 必须属于当前用户且是 `active`：
 | `done` | `{}` | 本次 SSE 终止事件。 |
 
 客户端断开 SSE **不会**中止后台任务；Gateway 会继续消费 Runtime 流并持久化历史。历史顺序以 Pi `message_end` 为准，每到一条安全投影即提交，因此已完成工具调用/结果不会因后续失败丢失。一个 Session 同时只能有一个 `running` Run；冲突返回 `409 {"detail":"session_busy"}`。
+
+如果 Session 绑定了知识库，Runtime 额外向 Pi 注册 `rag_search`。模型可指定其中一个
+`knowledge_base_id`、`query`、`mode`（`vector`、`hybrid` 或 `graph`）、可选
+`document_ids` 与 `top_k`（1–20，默认 5）；Workspace、用户和其他检索参数不可由模型
+指定。检索证据是非可信资料，回答应保留 `document_id`/`chunk_id` 引用。工具错误会以
+`isError=true` 记录，但不会强制中止 Agent Run。
 
 ```bash
 curl -N -X POST "http://127.0.0.1:8000/api/v1/sessions/$SESSION_ID/messages:stream" \

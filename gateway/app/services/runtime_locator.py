@@ -1,13 +1,14 @@
 import asyncio
+import secrets
 import os
+from hashlib import sha256
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import UUID
 
 import docker
 import httpx
-from docker.errors import APIError, DockerException, ImageNotFound, NotFound
+from docker.errors import DockerException, ImageNotFound, NotFound
 from sqlalchemy import select
 
 from ..core.config import Settings, get_settings
@@ -111,6 +112,7 @@ class DockerRuntimeLocator(RuntimeLocator):
                     instance.container_id = None
                     instance.host_port = None
                     instance.state = "stopped"
+                    instance.rag_secret_digest = None
                     await db.commit()
             return await self._ensure_locked(user_id)
 
@@ -124,7 +126,11 @@ class DockerRuntimeLocator(RuntimeLocator):
             try:
                 container = await self._container(instance.container_id) if instance.container_id else None
                 if container is None:
-                    container = await asyncio.to_thread(self._create_container, user_id)
+                    rag_secret = secrets.token_urlsafe(48)
+                    instance.rag_secret_digest = sha256(rag_secret.encode()).digest()
+                    container = await asyncio.to_thread(
+                        self._create_container, user_id, rag_secret
+                    )
                     instance.container_id = container.id
                     instance.container_name = container.name
                 await asyncio.to_thread(container.reload)
@@ -145,7 +151,7 @@ class DockerRuntimeLocator(RuntimeLocator):
                 await db.commit()
                 raise RuntimeUnavailableError("docker_runtime_unavailable") from exc
 
-    def _create_container(self, user_id: UUID):
+    def _create_container(self, user_id: UUID, rag_secret: str):
         tenant_dir = self.settings.resolved_runtime_data_host_root / "tenants" / str(user_id)
         tenant_dir.mkdir(parents=True, exist_ok=True)
         # A Runtime container receives exactly one tenant directory.  Keep its
@@ -161,9 +167,19 @@ class DockerRuntimeLocator(RuntimeLocator):
             environment={
                 "TENANT_ID": str(user_id),
                 "RUNTIME_SHARED_SECRET": self.settings.runtime_shared_secret,
+                "RUNTIME_RAG_SHARED_SECRET": rag_secret,
+                "RUNTIME_GATEWAY_BASE_URL": self.settings.runtime_gateway_base_url
+                or "",
+                "RUNTIME_RAG_REQUEST_TIMEOUT_SECONDS": str(
+                    self.settings.runtime_rag_request_timeout_seconds
+                ),
+                "RUNTIME_RAG_RESULT_MAX_BYTES": str(
+                    self.settings.runtime_rag_result_max_bytes
+                ),
                 "WORKSPACE_STORAGE_LIMIT_MB": str(self.settings.workspace_storage_limit_mb),
                 "WORKSPACE_FILE_MAX_MB": str(self.settings.workspace_file_max_mb),
             },
+            extra_hosts={"host.docker.internal": "host-gateway"},
             volumes={
                 str(self.settings.resolved_runtime_source_dir): {"bind": "/opt/pi-runtime/src", "mode": "ro"},
                 str(tenant_dir): {"bind": container_path, "mode": "rw"},

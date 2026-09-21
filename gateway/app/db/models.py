@@ -75,6 +75,19 @@ class AgentSession(Timestamped, Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class AgentSessionKnowledgeBase(Base):
+    __tablename__ = "agent_session_knowledge_bases"
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("platform.agent_sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    knowledge_base_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("rag.knowledge_bases.id", ondelete="CASCADE"), primary_key=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
     __table_args__ = (UniqueConstraint("session_id", "sequence", name="uq_chat_messages_session_sequence"),)
@@ -121,3 +134,4 @@ class RuntimeInstance(Timestamped, Base):
     state: Mapped[str] = mapped_column(String(32), default="stopped")
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rag_secret_digest: Mapped[bytes | None] = mapped_column(LargeBinary(32), nullable=True)

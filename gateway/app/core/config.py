@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,6 +33,9 @@ class Settings(BaseSettings):
     runtime_memory_limit: str = "1g"
     runtime_nano_cpus: int = Field(default=1_000_000_000, gt=0)
     runtime_pids_limit: int = Field(default=256, gt=0)
+    runtime_gateway_base_url: str | None = None
+    runtime_rag_request_timeout_seconds: int = Field(default=30, ge=1, le=120)
+    runtime_rag_result_max_bytes: int = Field(default=65_536, ge=1_024, le=262_144)
     workspace_max_per_user: int | None = Field(default=None, ge=1)
     workspace_storage_limit_mb: int = Field(default=1024, ge=1)
     workspace_file_max_mb: int = Field(default=100, ge=1)
@@ -100,6 +104,23 @@ class Settings(BaseSettings):
         ):
             return None
         return value
+
+    @field_validator("runtime_gateway_base_url")
+    @classmethod
+    def validate_runtime_gateway_base_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("RUNTIME_GATEWAY_BASE_URL must be an http(s) origin")
+        return value.rstrip("/")
 
     @model_validator(mode="after")
     def validate_secrets(self):

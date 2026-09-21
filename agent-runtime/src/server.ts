@@ -68,7 +68,7 @@ app.put<{ Params: { id: string }; Body: SessionInput }>("/internal/v1/sessions/:
 	let managed = registry.get(request.params.id);
 	if (!managed) {
 		try {
-			managed = await createSession(tenant, request.body);
+			managed = await createSession(tenant, request.params.id, request.body);
 		} catch (error) {
 			if (error instanceof InvalidSessionFileKeyError) return reply.code(422).send({ error: "invalid_session_file_key" });
 			throw error;

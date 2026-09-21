@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -52,7 +53,7 @@ def test_foreign_session_is_not_visible_as_a_distinct_error():
     asyncio.run(run())
 
 
-def test_second_running_run_is_reported_as_session_busy_when_flush_fails():
+def test_second_running_run_is_reported_as_session_busy_when_flush_fails(monkeypatch):
     class BusySession:
         def __init__(self) -> None:
             self.scalar_calls = 0
@@ -86,6 +87,11 @@ def test_second_running_run_is_reported_as_session_busy_when_flush_fails():
 
     session_id = uuid4()
     workspace_id = uuid4()
+    # This unit exercises the run uniqueness boundary; quota traversal has its
+    # own contract tests and would otherwise start a real worker thread.
+    monkeypatch.setattr(
+        "app.api.v1.sessions.enforce_workspace_storage_limit", AsyncMock()
+    )
     asyncio.run(run_test())
 
 

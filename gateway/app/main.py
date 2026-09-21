@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from .api.internal import rag as internal_rag
 from .api.v1 import auth, profiles, providers, rag, runtime, sessions, workspaces
 from .clients.agent_runtime import RuntimeClient
 from .core.config import get_settings
@@ -80,3 +81,5 @@ for route in (
     sessions.router,
 ):
     app.include_router(route, prefix="/api/v1")
+
+app.include_router(internal_rag.router)

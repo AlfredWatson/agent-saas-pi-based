@@ -452,7 +452,7 @@ class AgentUserFlow:
         self.resources["workbook_sha256"] = digest
         return path, digest, expected_cells
 
-    def create_session(self) -> None:
+    def create_session(self, knowledge_base_ids: list[str] | None = None) -> None:
         require(
             self.profile_id is not None and self.workspace_id is not None,
             "profile or workspace is missing",
@@ -462,7 +462,10 @@ class AgentUserFlow:
             "/sessions",
             expected=201,
             label="create-session-from-current-workspace",
-            json={"profile_id": self.profile_id},
+            json={
+                "profile_id": self.profile_id,
+                **({"knowledge_base_ids": knowledge_base_ids} if knowledge_base_ids else {}),
+            },
         )
         session_id = session.get("id")
         require(isinstance(session_id, str), "session creation did not return id")

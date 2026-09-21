@@ -3,6 +3,7 @@ import { basename, resolve } from "node:path";
 import { createAgentSession, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { config } from "../config.js";
+import { createRagSearchTool, type RagKnowledgeBase } from "../rag/rag-tool.js";
 import { createPayloadRedactor } from "./event-projection.js";
 import type { ManagedSession } from "./session-registry.js";
 
@@ -30,7 +31,7 @@ function sessionFilePath(sessionFileKey: string, sessions: string): string {
 	return resolve(sessions, sessionFileKey);
 }
 
-export type SessionInput = { workspace_key: string; model_id: string; thinking_level?: string; api_key: string; provider_id: string; session_file_key?: string };
+export type SessionInput = { workspace_key: string; model_id: string; thinking_level?: string; api_key: string; provider_id: string; session_file_key?: string; knowledge_bases?: RagKnowledgeBase[] };
 export type WorkspaceSessionFile = { session_id: string; session_file_key?: string | null };
 
 /** Make the writable HOME available before any Pi tool or subprocess needs it. */
@@ -50,7 +51,7 @@ export async function deleteWorkspaceData(workspaceKey: string, sessions: Worksp
 }
 
 /** Runtime credentials deliberately live only in this ModelRuntime instance. */
-export async function createSession(tenant: string, input: SessionInput): Promise<ManagedSession> {
+export async function createSession(tenant: string, sessionId: string, input: SessionInput): Promise<ManagedSession> {
 	const workspace = workspacePath(input.workspace_key);
 	const sessions = runtimePath("sessions");
 	const agentDir = runtimePath("agent");
@@ -66,6 +67,8 @@ export async function createSession(tenant: string, input: SessionInput): Promis
 	const manager = input.session_file_key
 		? SessionManager.open(sessionFilePath(input.session_file_key, sessions), sessions, workspace)
 		: SessionManager.create(workspace, sessions);
+	const knowledgeBases = input.knowledge_bases ?? [];
+	if (knowledgeBases.length > 0 && (!config.gatewayBaseUrl || !config.ragSharedSecret)) throw new Error("rag_runtime_not_configured");
 	const { session } = await createAgentSession({
 		cwd: workspace,
 		agentDir,
@@ -73,8 +76,17 @@ export async function createSession(tenant: string, input: SessionInput): Promis
 		modelRuntime,
 		model,
 		thinkingLevel: input.thinking_level as never,
+		customTools: knowledgeBases.length > 0 ? [createRagSearchTool({
+			baseUrl: config.gatewayBaseUrl!,
+			secret: config.ragSharedSecret,
+			tenant,
+			sessionId,
+			knowledgeBases,
+			timeoutMs: config.ragRequestTimeoutMs,
+			maxResultBytes: config.ragResultMaxBytes,
+		})] : [],
 	});
 	const sessionFile = session.sessionFile ? basename(session.sessionFile) : undefined;
 	if (!sessionFile || !SAFE_SESSION_FILE_KEY.test(sessionFile)) throw new Error("session_file_missing");
-	return { tenant, session, busy: false, sessionFile, redactor: createPayloadRedactor([config.sharedSecret, input.api_key]) };
+	return { tenant, session, busy: false, sessionFile, redactor: createPayloadRedactor([config.sharedSecret, config.ragSharedSecret, input.api_key]) };
 }
