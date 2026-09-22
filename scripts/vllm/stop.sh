@@ -9,7 +9,7 @@ pid_dir="${project_root}/logs/vllm"
 target="${1:-all}"
 
 usage() {
-  echo "Usage: $0 [all|embedding|llm]" >&2
+  echo "Usage: $0 [all|embedding|reranker|llm]" >&2
 }
 
 stop_one() {
@@ -66,11 +66,15 @@ case "${target}" in
   all)
     status=0
     stop_one "embedding" "${pid_dir}/qwen3-embedding-8b.pid" "Qwen3-Embedding-8B" || status=1
+    stop_one "reranker" "${pid_dir}/qwen3-reranker-0.6b.pid" "Qwen3-Reranker-0.6B" || status=1
     stop_one "llm" "${pid_dir}/qwen3.8-27b-fp8.pid" "Qwen3.8-27B-FP8" || status=1
     exit "${status}"
     ;;
   embedding)
     stop_one "embedding" "${pid_dir}/qwen3-embedding-8b.pid" "Qwen3-Embedding-8B"
+    ;;
+  reranker)
+    stop_one "reranker" "${pid_dir}/qwen3-reranker-0.6b.pid" "Qwen3-Reranker-0.6B"
     ;;
   llm)
     stop_one "llm" "${pid_dir}/qwen3.8-27b-fp8.pid" "Qwen3.8-27B-FP8"
