@@ -113,3 +113,4 @@ memory-bank
 /test/files/**
 /docker/volumes/**
 /tmp/**
+/frontend/node_modules/**
