@@ -165,6 +165,9 @@ class Config:
     poll_interval_seconds: float
     keep_resources: bool
     report: Path | None
+    reranker_base_url: str | None = None
+    reranker_model: str | None = None
+    reranker_api_key: str | None = None
 
 
 class UserFlow:
@@ -189,6 +192,10 @@ class UserFlow:
     @property
     def backends(self) -> dict[str, str]:
         return {**STATIC_BACKENDS, "vector_backend": self.config.vector_backend}
+
+    @property
+    def reranker_enabled(self) -> bool:
+        return self.config.reranker_base_url is not None
 
     @property
     def headers(self) -> dict[str, str]:
@@ -324,6 +331,11 @@ class UserFlow:
             "embedding", self.config.embedding_base_url, self.config.embedding_model
         )
         self.preflight_model("llm", self.config.llm_base_url, self.config.llm_model)
+        if self.reranker_enabled:
+            require(self.config.reranker_model is not None, "reranker model is missing")
+            self.preflight_model(
+                "reranker", self.config.reranker_base_url, self.config.reranker_model
+            )
         return fixtures
 
     def login_and_validate_capabilities(self) -> None:
@@ -414,7 +426,8 @@ class UserFlow:
             require(isinstance(kb_id, str), f"{label} knowledge base did not return id")
             require(
                 all(
-                    knowledge_base.get(key) == value for key, value in self.backends.items()
+                    knowledge_base.get(key) == value
+                    for key, value in self.backends.items()
                 ),
                 f"{label} knowledge base did not retain the selected backends",
             )
@@ -443,7 +456,8 @@ class UserFlow:
         require(len(created) == 2, "could not find exactly two new knowledge bases")
         require(
             all(
-                {key: item.get(key) for key in self.backends} == self.backends for item in created
+                {key: item.get(key) for key in self.backends} == self.backends
+                for item in created
             ),
             "created knowledge bases have differing storage configurations",
         )
@@ -941,6 +955,42 @@ class UserFlow:
         require(
             kinds == {"embedding", "llm"}, f"unexpected configured model kinds: {kinds}"
         )
+        if self.reranker_enabled:
+            require(
+                self.config.reranker_model is not None
+                and self.config.reranker_api_key is not None,
+                "reranker configuration is incomplete",
+            )
+            configured = self.json_request(
+                "PUT",
+                f"{self.kb_root(self.primary_kb_id)}/reranker-model",
+                label="configure-reranker-model",
+                json={
+                    "protocol": "vllm",
+                    "base_url": self.config.reranker_base_url,
+                    "api_key": self.config.reranker_api_key,
+                    "model_name": self.config.reranker_model,
+                },
+            )
+            require(
+                configured.get("kind") == "reranker"
+                and configured.get("protocol") == "vllm",
+                f"invalid reranker configuration response: {configured!r}",
+            )
+            models = self.json_request(
+                "GET",
+                f"{self.kb_root(self.primary_kb_id)}/models",
+                label="list-models-with-reranker",
+            )
+            kinds = {
+                item.get("kind")
+                for item in models.get("items", [])
+                if isinstance(item, dict)
+            }
+            require(
+                kinds == {"embedding", "llm", "reranker"},
+                f"reranker was not listed with knowledge-base models: {kinds}",
+            )
 
     def chunk_and_vectorize(self) -> None:
         require(self.primary_kb_id is not None, "primary knowledge base missing")
@@ -1062,6 +1112,17 @@ class UserFlow:
                     isinstance(score, (int, float)) and math.isfinite(score),
                     f"{mode} retrieval has invalid score: {item!r}",
                 )
+                if self.reranker_enabled:
+                    require(
+                        isinstance(item.get("retrieval_score"), (int, float)),
+                        f"{mode} reranked retrieval has no original score: {item!r}",
+                    )
+            if self.reranker_enabled:
+                require(
+                    result.get("rerank")
+                    == {"configured": True, "applied": True, "error": None},
+                    f"{mode} reranker was not applied: {result!r}",
+                )
 
         filtered = self.json_request(
             "POST",
@@ -1099,6 +1160,47 @@ class UserFlow:
             ),
             "graph retrieval evidence escaped selected graph documents",
         )
+        require(
+            "rerank" not in graph_result,
+            f"graph retrieval unexpectedly exposed rerank state: {graph_result!r}",
+        )
+
+        if self.reranker_enabled:
+            self.request(
+                "DELETE",
+                f"{self.kb_root(self.primary_kb_id)}/reranker-model",
+                expected=204,
+                label="disable-reranker-model",
+            )
+            disabled = self.json_request(
+                "POST",
+                f"{self.kb_root(self.primary_kb_id)}/retrieve",
+                label="retrieve-with-reranker-disabled",
+                json={
+                    "query": "Unity Codely Agent 前期推进计划",
+                    "mode": "vector",
+                    "top_k": 5,
+                },
+            )
+            require(
+                disabled.get("rerank")
+                == {"configured": False, "applied": False, "error": None}
+                and all(
+                    "retrieval_score" not in item for item in disabled.get("items", [])
+                ),
+                f"reranker disable did not restore base retrieval: {disabled!r}",
+            )
+            self.json_request(
+                "PUT",
+                f"{self.kb_root(self.primary_kb_id)}/reranker-model",
+                label="restore-reranker-model",
+                json={
+                    "protocol": "vllm",
+                    "base_url": self.config.reranker_base_url,
+                    "api_key": self.config.reranker_api_key,
+                    "model_name": self.config.reranker_model,
+                },
+            )
 
         graphs = self.list_graphs(self.primary_kb_id, label="list-document-graphs")
         document_graphs = [
@@ -1590,6 +1692,18 @@ def parse_args() -> Config:
         default=configured_value("RAG_TEST_MODEL_API_KEY", dotenv_values) or "EMPTY",
     )
     parser.add_argument(
+        "--reranker-base-url",
+        default=configured_value("RAG_TEST_RERANKER_BASE_URL", dotenv_values),
+    )
+    parser.add_argument(
+        "--reranker-model",
+        default=configured_value("RAG_TEST_RERANKER_MODEL", dotenv_values),
+    )
+    parser.add_argument(
+        "--reranker-api-key",
+        default=configured_value("RAG_TEST_RERANKER_API_KEY", dotenv_values),
+    )
+    parser.add_argument(
         "--vector-backend",
         choices=("postgresql", "milvus", "chroma", "qdrant"),
         default=configured_value("RAG_TEST_VECTOR_BACKEND", dotenv_values)
@@ -1610,6 +1724,15 @@ def parse_args() -> Config:
     require(args.request_timeout_seconds > 0, "request timeout must be positive")
     require(args.job_timeout_seconds > 0, "job timeout must be positive")
     require(args.poll_interval_seconds > 0, "poll interval must be positive")
+    reranker_values = (
+        args.reranker_base_url,
+        args.reranker_model,
+        args.reranker_api_key,
+    )
+    require(
+        all(reranker_values) or not any(reranker_values),
+        "reranker base URL, model, and API key must be configured together",
+    )
     return Config(
         gateway=normalized_api_base(args.gateway),
         email=args.email,
@@ -1626,6 +1749,13 @@ def parse_args() -> Config:
         poll_interval_seconds=args.poll_interval_seconds,
         keep_resources=args.keep_resources,
         report=args.report.resolve() if args.report else None,
+        reranker_base_url=(
+            normalized_api_base(args.reranker_base_url)
+            if args.reranker_base_url
+            else None
+        ),
+        reranker_model=args.reranker_model,
+        reranker_api_key=args.reranker_api_key,
     )
 
 

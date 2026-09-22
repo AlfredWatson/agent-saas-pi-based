@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +41,7 @@ from app.domain.rag.schemas import (
     KnowledgeBaseCreate,
     KnowledgeBaseUpdate,
     ModelConfigInput,
+    RerankerModelConfigInput,
     ParsingJobSubmit,
     RetrievalInput,
 )
@@ -51,6 +52,7 @@ from app.integrations.rag.model_clients import (
     verify_embedding,
     verify_llm,
 )
+from app.integrations.rag.reranker import RerankerError, verify_reranker
 from app.integrations.rag.processors import SUPPORTED_EXTENSIONS
 from app.services.rag.retrieval import retrieve
 

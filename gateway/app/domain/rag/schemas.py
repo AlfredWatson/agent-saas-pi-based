@@ -57,6 +57,20 @@ class ModelConfigInput(BaseModel):
     thinking_effort: str | None = Field(default=None, max_length=64)
 
 
+class RerankerModelConfigInput(BaseModel):
+    """Configuration for Gateway's stable reranking interface.
+
+    ``protocol`` names the concrete Gateway adapter, not an industry-standard
+    reranking wire protocol.  Additional adapters can be added without
+    changing retrieval callers.
+    """
+
+    protocol: Literal["vllm"] = "vllm"
+    base_url: str = Field(min_length=1, max_length=2048)
+    api_key: str = Field(min_length=1, max_length=4096)
+    model_name: str = Field(min_length=1, max_length=256)
+
+
 class JobSubmit(BaseModel):
     document_ids: list[UUID] = Field(min_length=1, max_length=100)
 

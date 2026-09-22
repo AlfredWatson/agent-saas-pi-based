@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from uuid import UUID
 
@@ -21,7 +22,11 @@ from app.db.rag.models import (
 from app.domain.rag.graph import reciprocal_rank_fusion
 from app.domain.rag.schemas import RetrievalInput
 from app.integrations.rag.model_clients import embedding_client, input_from_stored
+from app.integrations.rag.reranker import Reranker, RerankerError, get_reranker
 from app.integrations.rag.vector_store import get_vector_store
+
+
+logger = logging.getLogger(__name__)
 
 
 def tokenize(text: str) -> list[str]:
@@ -46,8 +51,25 @@ async def _embedding_config(
     return config
 
 
-def render_document(document: Document, score: float, source: str) -> dict:
-    return {
+async def _reranker_config(
+    db: AsyncSession, knowledge_base_id: UUID
+) -> RagModelConfig | None:
+    return await db.scalar(
+        select(RagModelConfig).where(
+            RagModelConfig.knowledge_base_id == knowledge_base_id,
+            RagModelConfig.kind == "reranker",
+        )
+    )
+
+
+def render_document(
+    document: Document,
+    score: float,
+    source: str,
+    *,
+    retrieval_score: float | None = None,
+) -> dict:
+    result = {
         "chunk_id": document.metadata["chunk_id"],
         "document_id": document.metadata["document_id"],
         "text": document.page_content,
@@ -59,11 +81,91 @@ def render_document(document: Document, score: float, source: str) -> dict:
         "score": score,
         "source": source,
     }
+    if retrieval_score is not None:
+        result["retrieval_score"] = retrieval_score
+    return result
+
+
+def _rerank_status(configured: bool, applied: bool, error: str | None = None) -> dict:
+    return {"configured": configured, "applied": applied, "error": error}
+
+
+async def _render_ranked_rows(
+    rows: list[tuple[Document, float]],
+    *,
+    query: str,
+    top_k: int,
+    source: str,
+    reranker: Reranker | None,
+    reranker_config: RagModelConfig | None,
+    knowledge_base_id: UUID,
+) -> tuple[list[dict], dict]:
+    if reranker is None:
+        return (
+            [
+                render_document(document, score, source)
+                for document, score in rows[:top_k]
+            ],
+            _rerank_status(False, False),
+        )
+    if not rows:
+        return [], _rerank_status(True, False)
+    try:
+        ranked = await reranker.rerank(
+            query,
+            [document.page_content for document, _ in rows],
+            top_n=min(top_k, len(rows)),
+        )
+    except RerankerError as exc:
+        logger.warning(
+            "RAG reranker degraded knowledge_base_id=%s fingerprint=%s error=%s",
+            knowledge_base_id,
+            reranker_config.fingerprint if reranker_config else "unknown",
+            exc.code,
+        )
+        return (
+            [
+                render_document(document, score, source)
+                for document, score in rows[:top_k]
+            ],
+            _rerank_status(True, False, exc.code),
+        )
+    except Exception:
+        logger.warning(
+            "RAG reranker degraded knowledge_base_id=%s fingerprint=%s error=%s",
+            knowledge_base_id,
+            reranker_config.fingerprint if reranker_config else "unknown",
+            "reranker_unavailable",
+        )
+        return (
+            [
+                render_document(document, score, source)
+                for document, score in rows[:top_k]
+            ],
+            _rerank_status(True, False, "reranker_unavailable"),
+        )
+    return (
+        [
+            render_document(
+                rows[item.index][0],
+                item.score,
+                source,
+                retrieval_score=rows[item.index][1],
+            )
+            for item in ranked
+        ],
+        _rerank_status(True, True),
+    )
 
 
 async def vector_retrieve(
-    db: AsyncSession, knowledge_base_id: UUID, body: RetrievalInput
-) -> list[dict]:
+    db: AsyncSession,
+    knowledge_base_id: UUID,
+    body: RetrievalInput,
+    *,
+    reranker: Reranker | None,
+    reranker_config: RagModelConfig | None,
+) -> tuple[list[dict], dict]:
     config = await _embedding_config(db, knowledge_base_id)
     kb = await db.get(KnowledgeBase, knowledge_base_id)
     if kb is None:
@@ -76,15 +178,25 @@ async def vector_retrieve(
         k=max(body.top_k, body.candidate_k),
         score_threshold=body.min_score,
     )
-    return [
-        render_document(document, score, "vector")
-        for document, score in rows[: body.top_k]
-    ]
+    return await _render_ranked_rows(
+        rows,
+        query=body.query,
+        top_k=body.top_k,
+        source="vector",
+        reranker=reranker,
+        reranker_config=reranker_config,
+        knowledge_base_id=knowledge_base_id,
+    )
 
 
 async def hybrid_retrieve(
-    db: AsyncSession, knowledge_base_id: UUID, body: RetrievalInput
-) -> list[dict]:
+    db: AsyncSession,
+    knowledge_base_id: UUID,
+    body: RetrievalInput,
+    *,
+    reranker: Reranker | None,
+    reranker_config: RagModelConfig | None,
+) -> tuple[list[dict], dict]:
     config = await _embedding_config(db, knowledge_base_id)
     kb = await db.get(KnowledgeBase, knowledge_base_id)
     if kb is None:
@@ -115,15 +227,16 @@ async def hybrid_retrieve(
 
     vector_ids = [document.metadata["chunk_id"] for document, _ in vector_rows]
     bm25_ids = [str(chunk.id) for chunk, _ in bm25_rows]
+    candidate_limit = max(body.top_k, body.candidate_k) if reranker else body.top_k
     fused = reciprocal_rank_fusion(
         [(vector_ids, body.vector_weight), (bm25_ids, body.bm25_weight)],
         rrf_k=body.rrf_k,
-    )[: body.top_k]
+    )[:candidate_limit]
     vector_map = {
         document.metadata["chunk_id"]: document for document, _ in vector_rows
     }
     chunk_map = {str(chunk.id): chunk for chunk in chunks}
-    results: list[dict] = []
+    rows: list[tuple[Document, float]] = []
     for chunk_id, score in fused:
         if chunk_id in vector_map:
             document = vector_map[chunk_id]
@@ -136,8 +249,16 @@ async def hybrid_retrieve(
                 knowledge_base_id=str(knowledge_base_id),
             )
             document = Document(page_content=chunk.text, metadata=metadata)
-        results.append(render_document(document, score, "hybrid"))
-    return results
+        rows.append((document, score))
+    return await _render_ranked_rows(
+        rows,
+        query=body.query,
+        top_k=body.top_k,
+        source="hybrid",
+        reranker=reranker,
+        reranker_config=reranker_config,
+        knowledge_base_id=knowledge_base_id,
+    )
 
 
 async def graph_retrieve(
@@ -248,14 +369,30 @@ async def graph_retrieve(
 
 
 async def retrieve(db: AsyncSession, knowledge_base_id: UUID, body: RetrievalInput):
+    # Graph retrieval intentionally bypasses all reranker configuration and I/O.
+    if body.mode == "graph":
+        return {"mode": body.mode, **await graph_retrieve(db, knowledge_base_id, body)}
+
+    reranker_config = await _reranker_config(db, knowledge_base_id)
+    reranker = (
+        get_reranker(input_from_stored(reranker_config))
+        if reranker_config is not None
+        else None
+    )
     if body.mode == "vector":
-        return {
-            "mode": body.mode,
-            "items": await vector_retrieve(db, knowledge_base_id, body),
-        }
-    if body.mode == "hybrid":
-        return {
-            "mode": body.mode,
-            "items": await hybrid_retrieve(db, knowledge_base_id, body),
-        }
-    return {"mode": body.mode, **await graph_retrieve(db, knowledge_base_id, body)}
+        items, status = await vector_retrieve(
+            db,
+            knowledge_base_id,
+            body,
+            reranker=reranker,
+            reranker_config=reranker_config,
+        )
+    else:
+        items, status = await hybrid_retrieve(
+            db,
+            knowledge_base_id,
+            body,
+            reranker=reranker,
+            reranker_config=reranker_config,
+        )
+    return {"mode": body.mode, "items": items, "rerank": status}

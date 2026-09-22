@@ -14,7 +14,11 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from app.core.config import get_settings
 from app.core.encryption import decrypt
 from app.db.rag.models import RagModelConfig
-from app.domain.rag.schemas import GraphExtraction, ModelConfigInput
+from app.domain.rag.schemas import (
+    GraphExtraction,
+    ModelConfigInput,
+    RerankerModelConfigInput,
+)
 
 
 def _bypass_proxy_for_local_development(base_url: str) -> None:
@@ -36,14 +40,16 @@ def _bypass_proxy_for_local_development(base_url: str) -> None:
             os.environ[variable] = ",".join([*existing, hostname])
 
 
-def model_fingerprint(kind: str, body: ModelConfigInput) -> str:
+def model_fingerprint(
+    kind: str, body: ModelConfigInput | RerankerModelConfigInput
+) -> str:
     material = "\0".join(
         (
             kind,
             body.protocol,
             body.base_url.rstrip("/"),
             body.model_name,
-            body.thinking_effort or "",
+            getattr(body, "thinking_effort", None) or "",
             body.api_key,
         )
     )
@@ -163,12 +169,16 @@ async def verify_llm(body: ModelConfigInput) -> None:
         raise ValueError("llm_structured_output_verification_failed")
 
 
-def input_from_stored(config: RagModelConfig) -> ModelConfigInput:
+def input_from_stored(
+    config: RagModelConfig,
+) -> ModelConfigInput | RerankerModelConfigInput:
     aad = f"rag:{config.knowledge_base_id}:{config.kind}:{config.id}:{config.protocol}".encode()
-    return ModelConfigInput(
-        protocol=config.protocol,
-        base_url=config.base_url,
-        api_key=decrypt(config.ciphertext, config.nonce, aad),
-        model_name=config.model_name,
-        thinking_effort=config.thinking_effort,
-    )
+    values = {
+        "protocol": config.protocol,
+        "base_url": config.base_url,
+        "api_key": decrypt(config.ciphertext, config.nonce, aad),
+        "model_name": config.model_name,
+    }
+    if config.kind == "reranker":
+        return RerankerModelConfigInput(**values)
+    return ModelConfigInput(**values, thinking_effort=config.thinking_effort)

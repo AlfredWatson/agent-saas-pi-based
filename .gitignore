@@ -102,6 +102,7 @@ memory-bank
 /parse_output/
 
 # 自定义
+/logs/**
 /pi-main/
 /agent-runtime/node_modules/**
 /agent-runtime/.runtime-data/**

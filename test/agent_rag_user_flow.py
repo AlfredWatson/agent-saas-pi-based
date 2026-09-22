@@ -12,10 +12,8 @@ import argparse
 import json
 import logging
 import sys
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
 from agent_user_flow import AgentUserFlow, Config as AgentConfig, FlowError, gateway_from_env_file, require
@@ -39,6 +37,9 @@ def config_from_args() -> tuple[AgentConfig, RagConfig, Path | None]:
     parser.add_argument("--embedding-base-url", default=configured_value("RAG_TEST_EMBEDDING_BASE_URL", dotenv) or "http://127.0.0.1:31995/v1")
     parser.add_argument("--embedding-model", default=configured_value("RAG_TEST_EMBEDDING_MODEL", dotenv) or "Qwen3-Embedding-8B")
     parser.add_argument("--model-api-key", default=configured_value("RAG_TEST_MODEL_API_KEY", dotenv) or "EMPTY")
+    parser.add_argument("--reranker-base-url", default=configured_value("RAG_TEST_RERANKER_BASE_URL", dotenv))
+    parser.add_argument("--reranker-model", default=configured_value("RAG_TEST_RERANKER_MODEL", dotenv))
+    parser.add_argument("--reranker-api-key", default=configured_value("RAG_TEST_RERANKER_API_KEY", dotenv))
     parser.add_argument("--vector-backend", choices=("postgresql", "milvus", "chroma", "qdrant"), default=configured_value("RAG_TEST_VECTOR_BACKEND", dotenv) or "postgresql")
     parser.add_argument("--request-timeout-seconds", type=float, default=120)
     parser.add_argument("--job-timeout-seconds", type=float, default=1_800)
@@ -49,11 +50,13 @@ def config_from_args() -> tuple[AgentConfig, RagConfig, Path | None]:
     args = parser.parse_args()
     for value, name in ((args.email, "AGENT_TEST_EMAIL or RAG_TEST_EMAIL"), (args.password, "AGENT_TEST_PASSWORD or RAG_TEST_PASSWORD"), (args.provider_id, "AGENT_TEST_PROVIDER_ID"), (args.provider_api_key, "AGENT_TEST_PROVIDER_API_KEY"), (args.model_id, "AGENT_TEST_MODEL_ID")):
         require(bool(value), f"required test configuration is missing: {name}")
+    reranker_values = (args.reranker_base_url, args.reranker_model, args.reranker_api_key)
+    require(all(reranker_values) or not any(reranker_values), "reranker base URL, model, and API key must be configured together")
     require(args.request_timeout_seconds > 0 and args.job_timeout_seconds > 0 and args.run_timeout_seconds > 0 and args.poll_interval_seconds > 0, "timeouts and poll interval must be positive")
     gateway = normalized_api_base(args.gateway)
     return (
         AgentConfig(gateway=gateway, email=args.email, password=args.password, provider_id=args.provider_id, provider_api_key=args.provider_api_key, model_id=args.model_id, thinking_level=args.thinking_level, request_timeout_seconds=args.request_timeout_seconds, run_timeout_seconds=args.run_timeout_seconds, poll_interval_seconds=args.poll_interval_seconds, keep_resources=args.keep_resources, report=None),
-        RagConfig(gateway=gateway, email=args.email, password=args.password, files_dir=ROOT / "test/files", embedding_base_url=normalized_api_base(args.embedding_base_url), embedding_model=args.embedding_model, llm_base_url=normalized_api_base(configured_value("RAG_TEST_LLM_BASE_URL", dotenv) or "http://127.0.0.1:30018/v1"), llm_model=configured_value("RAG_TEST_LLM_MODEL", dotenv) or "Qwen3.8-27B-FP8", model_api_key=args.model_api_key, vector_backend=args.vector_backend, request_timeout_seconds=args.request_timeout_seconds, job_timeout_seconds=args.job_timeout_seconds, poll_interval_seconds=args.poll_interval_seconds, keep_resources=args.keep_resources, report=None),
+        RagConfig(gateway=gateway, email=args.email, password=args.password, files_dir=ROOT / "test/files", embedding_base_url=normalized_api_base(args.embedding_base_url), embedding_model=args.embedding_model, llm_base_url=normalized_api_base(configured_value("RAG_TEST_LLM_BASE_URL", dotenv) or "http://127.0.0.1:30018/v1"), llm_model=configured_value("RAG_TEST_LLM_MODEL", dotenv) or "Qwen3.8-27B-FP8", model_api_key=args.model_api_key, vector_backend=args.vector_backend, request_timeout_seconds=args.request_timeout_seconds, job_timeout_seconds=args.job_timeout_seconds, poll_interval_seconds=args.poll_interval_seconds, keep_resources=args.keep_resources, report=None, reranker_base_url=normalized_api_base(args.reranker_base_url) if args.reranker_base_url else None, reranker_model=args.reranker_model, reranker_api_key=args.reranker_api_key),
         args.report.resolve() if args.report else None,
     )
 
@@ -78,6 +81,9 @@ def create_vectorized_marker(flow: RagUserFlow) -> tuple[str, str, str]:
     flow.wait_for_stage([document_id], "chunking", chunking, label="wait-agent-rag-chunking")
     vectorization = flow.submit_stage("vectorization", [document_id], label="submit-agent-rag-vectorization")
     flow.wait_for_stage([document_id], "vectorization", vectorization, label="wait-agent-rag-vectorization")
+    if flow.reranker_enabled:
+        require(flow.config.reranker_model is not None and flow.config.reranker_api_key is not None, "reranker configuration is incomplete")
+        flow.json_request("PUT", f"{flow.kb_root(flow.primary_kb_id)}/reranker-model", label="configure-agent-rag-reranker", json={"protocol": "vllm", "base_url": flow.config.reranker_base_url, "api_key": flow.config.reranker_api_key, "model_name": flow.config.reranker_model})
     return flow.primary_kb_id, document_id, marker
 
 

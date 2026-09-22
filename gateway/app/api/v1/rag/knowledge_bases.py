@@ -131,15 +131,18 @@ async def set_model(
     kind: str,
     workspace_id: UUID,
     knowledge_base_id: UUID,
-    body: ModelConfigInput,
+    body: ModelConfigInput | RerankerModelConfigInput,
     user: User,
     db: AsyncSession,
 ):
     kb = await owned_kb(db, workspace_id, knowledge_base_id, user.id, lock=True)
     if kb.status != "active":
         raise HTTPException(409, "knowledge_base_unavailable")
-    active_kind = "vectorization" if kind == "embedding" else "graph_extraction"
-    if await db.scalar(
+    active_kind = {
+        "embedding": "vectorization",
+        "llm": "graph_extraction",
+    }.get(kind)
+    if active_kind and await db.scalar(
         select(ProcessingJob.id)
         .where(
             ProcessingJob.knowledge_base_id == kb.id,
@@ -167,8 +170,11 @@ async def set_model(
         raise HTTPException(409, "embedding_model_locked_by_vectors")
     if kind == "embedding":
         dimension = await verify_embedding(body)
-    else:
+    elif kind == "llm":
         await verify_llm(body)
+        dimension = None
+    else:
+        await verify_reranker(body)
         dimension = None
     config = await db.scalar(
         select(RagModelConfig).where(
@@ -182,7 +188,7 @@ async def set_model(
             protocol=body.protocol,
             base_url=body.base_url.rstrip("/"),
             model_name=body.model_name,
-            thinking_effort=body.thinking_effort,
+            thinking_effort=getattr(body, "thinking_effort", None),
             ciphertext=b"",
             nonce=b"",
             fingerprint=model_fingerprint(kind, body),
@@ -194,7 +200,7 @@ async def set_model(
         config.protocol = body.protocol
         config.base_url = body.base_url.rstrip("/")
         config.model_name = body.model_name
-        config.thinking_effort = body.thinking_effort
+        config.thinking_effort = getattr(body, "thinking_effort", None)
         config.fingerprint = model_fingerprint(kind, body)
         config.embedding_dimension = dimension
         config.verified_at = func.now()
@@ -206,14 +212,17 @@ async def set_model(
             select(RagDocument.id).where(RagDocument.knowledge_base_id == kb.id)
         )
     ).all()
-    cache = RagCache()
-    try:
-        for document_id in document_ids:
-            await cache.delete_kind(
-                kb.id, document_id, "vector" if kind == "embedding" else "graph-v1"
-            )
-    finally:
-        await cache.close()
+    if kind in {"embedding", "llm"}:
+        cache = RagCache()
+        try:
+            for document_id in document_ids:
+                await cache.delete_kind(
+                    kb.id,
+                    document_id,
+                    "vector" if kind == "embedding" else "graph-v1",
+                )
+        finally:
+            await cache.close()
     await db.commit()
     return {
         "kind": kind,
@@ -259,6 +268,49 @@ async def set_llm_model(
         return await set_model("llm", workspace_id, knowledge_base_id, body, user, db)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
+
+
+@router.put(
+    "/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/reranker-model"
+)
+async def set_reranker_model(
+    workspace_id: UUID,
+    knowledge_base_id: UUID,
+    body: RerankerModelConfigInput,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await set_model(
+            "reranker", workspace_id, knowledge_base_id, body, user, db
+        )
+    except (ValueError, RerankerError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.delete(
+    "/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/reranker-model",
+    status_code=204,
+)
+async def delete_reranker_model(
+    workspace_id: UUID,
+    knowledge_base_id: UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    kb = await owned_kb(db, workspace_id, knowledge_base_id, user.id, lock=True)
+    if kb.status != "active":
+        raise HTTPException(409, "knowledge_base_unavailable")
+    deleted = await db.execute(
+        delete(RagModelConfig).where(
+            RagModelConfig.knowledge_base_id == kb.id,
+            RagModelConfig.kind == "reranker",
+        )
+    )
+    if deleted.rowcount:
+        kb.version += 1
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/models")

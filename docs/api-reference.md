@@ -535,9 +535,29 @@ Workspace 名称重复返回 `409 knowledge_base_exists`。
 图谱结构化输出能力。已有历史图谱不阻止改模型；queued/running 图谱任务会返回
 `409 llm_jobs_active`。旧图谱保留创建时模型的配置指纹。
 
+### `PUT .../{knowledge_base_id}/reranker-model`
+
+仅支持 Gateway 的 `vllm` reranker adapter。设置时服务会实际调用
+`{base_url}/rerank`，以两个固定文本和 `top_n:1` 验证模型可用；探测失败不会覆盖旧配置。
+`base_url` 可以是 vLLM 根地址或 `/v1` 地址。请求和成功响应沿用模型配置的脱敏字段：
+
+```json
+{
+  "protocol":"vllm",
+  "base_url":"https://reranker.example",
+  "api_key":"<secret>",
+  "model_name":"BAAI/bge-reranker-v2-m3"
+}
+```
+
+### `DELETE .../{knowledge_base_id}/reranker-model`
+
+幂等返回 `204`。删除后 vector/hybrid 立即回到候选阶段原排序；不会影响 embedding、LLM、
+文档或图谱。
+
 ### `GET .../{knowledge_base_id}/models`
 
-返回当前知识库的 embedding/LLM 配置列表，响应绝不包含 API key。
+返回当前知识库的 embedding/LLM/reranker 配置列表，响应绝不包含 API key。
 
 ### 8.4 文档与处理状态
 
@@ -695,12 +715,17 @@ parsing/chunking 不使用缓存，失败时不发布 partial blocks/chunks。�
 
 | `mode` | 参数 | 返回 |
 | --- | --- | --- |
-| `vector` | `top_k`、`candidate_k`、`min_score`、`document_ids` | 排序后的 chunks：`chunk_id`、`document_id`、`text`、`metadata`、`score`、`source:"vector"` |
-| `hybrid` | `vector_k`、`bm25_k`、两路 `*_weight`、`rrf_k`、`top_k` | 向量/BM25 候选经带权 RRF 融合后的 chunks，`source:"hybrid"` |
+| `vector` | `top_k`、`candidate_k`、`min_score`、`document_ids` | 未配置 reranker 时为原向量排序；配置后将 `max(top_k,candidate_k)` 候选重排。 |
+| `hybrid` | `vector_k`、`bm25_k`、`candidate_k`、两路 `*_weight`、`rrf_k`、`top_k` | 未配置 reranker 时为原 RRF 前 `top_k`；配置后保留 `max(top_k,candidate_k)` 个 RRF 候选再重排。 |
 | `graph` | `top_entities`、`max_hops`、`top_k`、`document_ids` | `nodes`、`edges` 与带 document/chunk 来源的 `evidence` |
 
 `top_k` 为 1–100，候选数为 1–500，`max_hops` 为 0–3。vector/hybrid 需有 embedding
 配置，否则返回 `409 embedding_model_required`。
+
+vector/hybrid 总会返回 `rerank` 状态对象。未配置为
+`{"configured":false,"applied":false,"error":null}`；成功重排时 item 的 `score` 是最终分数，
+并新增 `retrieval_score` 保留向量/RRF 分数。模型不可用或返回非法数据时会返回候选阶段前
+`top_k`，并把 `rerank.error` 设为安全错误码。graph 不读取 reranker 配置，也不返回该对象。
 
 ### 8.7 图谱
 
