@@ -46,7 +46,16 @@ for lifecycle, internal-network, and image-import requirements.
 The default Runtime catalog is intentionally limited. A production deployment
 must use a dedicated tenant container, a real secret store, an LLM gateway or
 short-lived runtime keys, and container/network limits. MCP, arbitrary
-extensions and a browser UI are intentionally out of scope for this phase.
+extensions remain intentionally out of scope for this phase.
+
+## Web workbench
+
+The repository now includes a separate React/Vite workbench under
+[`frontend/`](frontend/README.md). It provides Chinese-first Agent chat,
+Workspace files, Provider/Profile settings, and guided four-stage RAG
+management. Development uses Vite's `/api` proxy; production uses the
+frontend Nginx image to serve the SPA and reverse-proxy `/api/` to Gateway on
+the same origin. See the frontend README for build and deployment commands.
 
 ## Per-user Docker Runtime
 

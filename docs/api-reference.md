@@ -302,10 +302,38 @@ Binding 必须属于当前用户且是 `active`：
 轻量会话列表：
 
 ```json
-{"items":[{"id":"<uuid>","status":"ready","title":null,"knowledge_base_ids":["<uuid>"]}]}
+{"items":[{
+  "id":"<uuid>","status":"ready","title":null,
+  "knowledge_base_ids":["<uuid>"],"workspace_id":"<workspace-uuid>",
+  "profile_id":"<profile-uuid>","created_at":"...","updated_at":"...",
+  "latest_run":{"id":"<run-uuid>","status":"completed","error":null,
+                "started_at":"...","finished_at":"..."}
+}]}
 ```
 
 完整历史不包含在这里，应使用下一接口。
+
+### `GET /sessions/{session_id}`
+
+返回一个与列表中相同的完整会话对象。不存在或不属于当前用户返回
+`404 session_not_found`。`latest_run.status` 为 `running` 时，客户端可在 SSE 断线后轮询
+此接口并重新读取历史；断线本身不会中止后台 Agent Run。
+
+### `PATCH /sessions/{session_id}`
+
+仅更新会话标题：
+
+```json
+{"title":"分析产品文档"}
+```
+
+标题去除首尾空白后必须为 1–256 字符。运行中的会话也允许重命名；成功响应为完整会话对象。
+
+### `DELETE /sessions/{session_id}`
+
+删除单个会话的消息、Run、知识库绑定和已创建的 Pi JSONL 轨迹。运行中的会话返回
+`409 session_busy`。若 Runtime 轨迹暂时无法清理，返回 `503 session_delete_incomplete` 且
+数据库记录保持不变，可安全重试。删除不会影响 Workspace、Profile、Binding 或知识库。
 
 ### `GET /sessions/{session_id}/messages`
 

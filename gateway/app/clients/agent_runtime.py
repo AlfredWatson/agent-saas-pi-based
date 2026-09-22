@@ -98,6 +98,33 @@ class RuntimeClient:
             )
             response.raise_for_status()
 
+    async def delete_session(
+        self, user_id: str, session_id: str, session_file_key: str
+    ) -> None:
+        """Remove one idle Runtime session trajectory.
+
+        The public Gateway route owns the database transaction.  This method is
+        deliberately idempotent at the Runtime boundary so a database failure
+        after a successful file deletion can be retried safely.
+        """
+        base_url = await self._base_url(user_id)
+        try:
+            async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+                response = await client.request(
+                    "DELETE",
+                    f"{base_url}/internal/v1/sessions/{session_id}",
+                    headers=self._headers(user_id),
+                    json={"session_file_key": session_file_key},
+                )
+        except httpx.HTTPError as exc:
+            raise RuntimeUnavailableError("runtime_session_delete_failed") from exc
+        if response.status_code == 409:
+            raise RuntimeSessionBusyError("session_busy")
+        try:
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RuntimeUnavailableError("runtime_session_delete_failed") from exc
+
     async def delete_workspace(
         self, user_id: str, workspace_key: str, sessions: list[dict]
     ) -> None:
@@ -200,6 +227,10 @@ class RuntimeClient:
 
 
 class RuntimeWorkspaceBusyError(RuntimeError):
+    pass
+
+
+class RuntimeSessionBusyError(RuntimeError):
     pass
 
 

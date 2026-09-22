@@ -127,6 +127,35 @@ def main() -> int:
         history = agent.history(label="agent-rag-history")
         require(any(item.get("tool_name") == "rag_search" and item.get("role") == "tool_result" for item in history), "public history lacks rag_search tool result")
         require(any(document_id in str(item.get("content", "")) or document_id in str(item.get("result", "")) for item in history if item.get("tool_name") == "rag_search"), "rag_search history lacks document provenance")
+        require(agent.session_id is not None, "agent session is missing after streaming")
+        session_detail = agent.json_request(
+            "GET", f"/sessions/{agent.session_id}", label="get-agent-rag-session"
+        )
+        require(
+            session_detail.get("workspace_id") == rag.workspace_id
+            and session_detail.get("profile_id") == agent.profile_id
+            and knowledge_base_id in session_detail.get("knowledge_base_ids", []),
+            "session detail lost its immutable workspace, profile, or knowledge-base binding",
+        )
+        session_title = "RAG Agent 验收会话"
+        renamed_session = agent.json_request(
+            "PATCH",
+            f"/sessions/{agent.session_id}",
+            label="rename-agent-rag-session",
+            json={"title": f"  {session_title}  "},
+        )
+        require(
+            renamed_session.get("title") == session_title,
+            "session title was not trimmed and persisted",
+        )
+        agent.request(
+            "DELETE", f"/sessions/{agent.session_id}", expected=204,
+            label="delete-agent-rag-session",
+        )
+        agent.request(
+            "GET", f"/sessions/{agent.session_id}", expected=404,
+            label="get-deleted-agent-rag-session",
+        )
     except Exception as exc:
         failure = exc
     finally:

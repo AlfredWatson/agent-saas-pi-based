@@ -9,7 +9,7 @@ afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root,
 test("Faux sessions use stable tenant-agnostic data paths and Pi default coding tools", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-saas-runtime-")); roots.push(root);
 	process.env.RUNTIME_DATA_ROOT = root;
-	const { createSession, deleteWorkspaceData, ensureRuntimeHome, InvalidSessionFileKeyError } = await import("../src/sessions/session-factory.js");
+	const { createSession, deleteSessionData, deleteWorkspaceData, ensureRuntimeHome, InvalidSessionFileKeyError } = await import("../src/sessions/session-factory.js");
 	const { deleteWorkspaceFile, InvalidWorkspaceFilePathError, listWorkspaceFiles, uploadWorkspaceFile, WorkspaceFileExistsError, WorkspaceFileNotFoundError, UnsupportedWorkspaceFileTypeError } = await import("../src/workspaces/file-storage.js");
 	await ensureRuntimeHome();
 	const sessionId = "00000000-0000-0000-0000-000000000002";
@@ -32,6 +32,10 @@ test("Faux sessions use stable tenant-agnostic data paths and Pi default coding 
 	const resumed = await createSession("00000000-0000-0000-0000-000000000001", sessionId, { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", session_file_key: managed.sessionFile });
 	expect(resumed.sessionFile).toBe(managed.sessionFile);
 	resumed.session.dispose();
+	await deleteSessionData(managed.sessionFile);
+	await expect(access(join(root, "sessions", managed.sessionFile))).rejects.toThrow();
+	await expect(deleteSessionData(managed.sessionFile)).resolves.toBeUndefined();
+	await expect(deleteSessionData("../outside.jsonl")).rejects.toBeInstanceOf(InvalidSessionFileKeyError);
 	await expect(createSession("00000000-0000-0000-0000-000000000001", sessionId, { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", session_file_key: "../outside.jsonl" })).rejects.toBeInstanceOf(InvalidSessionFileKeyError);
 	await expect(createSession("00000000-0000-0000-0000-000000000001", sessionId, { workspace_key: "../outside", provider_id: "faux", api_key: "unused", model_id: "faux-1" })).rejects.toThrow("invalid_workspace_key");
 

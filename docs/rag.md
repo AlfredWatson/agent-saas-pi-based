@@ -89,6 +89,54 @@ chunking 配置可在上传后任何时候设置，但必须早于 chunking 任�
 `/chunks` 会同时删除向量和图谱；删除 `/blocks` 会继续删除 chunks 及全部下游数据。任一相关
 任务处于 `queued` 或 `running` 时，派生数据删除会返回 `409 document_processing`。
 
+## 重排（reranker）
+
+重排模型是知识库级的可选配置，目前只支持 vLLM。它只参与 `vector` 和 `hybrid` 检索；
+`graph` 检索在入口直接执行图谱检索，不读取重排配置、不创建客户端，也不会向重排服务发送请求。
+因此为知识库设置重排模型不会改变图谱检索或 Runtime 的 `rag_search` 图谱模式。
+
+配置前 Gateway 会向模型发起一次真实探测（固定 query、两个 documents、`top_n=1`）。探测失败
+会返回 `422 reranker_model_verification_failed` 或 `422 invalid_reranker_response`，并保留原有配置。
+服务端地址可以是根地址或以 `/v1` 结尾的地址；Gateway 分别调用 `/rerank` 或 `/v1/rerank`。
+
+```bash
+RERANKER_BASE_URL='http://reranker:8000'
+RERANKER_API_KEY='<secret>'
+RERANKER_MODEL='BAAI/bge-reranker-v2-m3'
+
+curl -fsS -X PUT "${RAG_BASE}/workspaces/${WORKSPACE_ID}/knowledge-bases/${KB_ID}/reranker-model" \
+  "${AUTH[@]}" -H 'Content-Type: application/json' \
+  --data "{\"protocol\":\"vllm\",\"base_url\":\"${RERANKER_BASE_URL}\",\"api_key\":\"${RERANKER_API_KEY}\",\"model_name\":\"${RERANKER_MODEL}\"}" | jq .
+```
+
+`GET .../knowledge-bases/{knowledge_base_id}/models` 会列出已配置的 `reranker`，但永不返回 API key。
+删除配置是幂等操作，即使原本没有配置也返回 `204`：
+
+```bash
+curl -fsS -o /dev/null -w '%{http_code}\n' -X DELETE \
+  "${RAG_BASE}/workspaces/${WORKSPACE_ID}/knowledge-bases/${KB_ID}/reranker-model" \
+  "${AUTH[@]}"
+```
+
+检索候选和结果的行为如下：
+
+- `vector` 先获得 `max(top_k, candidate_k)` 个向量候选，完成 PostgreSQL 回填、范围与 `min_score` 过滤后再重排。
+- `hybrid` 先以 RRF 融合向量和 BM25 候选。未配置重排时仍立即取 `top_k`；配置后保留
+  `max(top_k, candidate_k)` 个融合候选，重排后再取 `top_k`。
+- 成功重排时，`item.score` 是重排分数，`item.retrieval_score` 保留原始向量或 RRF 分数；未配置或
+  降级时维持原有 item 结构、分数和顺序。
+
+vector/hybrid 响应会给出重排状态。例如成功时：
+
+```json
+{"rerank":{"configured":true,"applied":true,"error":null}}
+```
+
+没有配置时为 `configured=false, applied=false`；候选为空时为 `configured=true, applied=false`。
+运行时网络、超时、非成功响应或无效结果会安全降级到候选阶段原始排序的前 `top_k`，并返回
+`reranker_unavailable` 或 `invalid_reranker_response`。`graph` 响应保持原有结构，不包含 `rerank`。
+复制知识库会沿用已验证的模型配置（包括 reranker），不会重复探测。
+
 ## 最小验证流程
 
 这个流程只验证不依赖外部模型的基础闭环：认证、Workspace 隔离、知识库创建、文件持久化、
@@ -188,4 +236,7 @@ uv run python test/rag_user_flow.py --vector-backend milvus --report /tmp/rag-mi
 
 该 flow 覆盖五种文件、四阶段、失败缓存续跑、三种检索、图谱合并、知识库复制和级联删除；
 脚本结束时会清理其创建的 Workspace 和知识库。生产或共享环境应使用独立测试账号、数据库和
-Redis DB。
+Redis DB。若要对真实 vLLM 重排服务做公开 HTTP 验收，额外设置
+`RAG_TEST_RERANKER_BASE_URL`、`RAG_TEST_RERANKER_MODEL` 和 `RAG_TEST_RERANKER_API_KEY`（三者必须
+同时设置）。脚本会预检服务、验证 vector/hybrid 的重排与双分数、确认 graph 不受影响，并在删除
+配置后验证恢复原有排序；未提供这些变量时不会声称完成真实模型验收。

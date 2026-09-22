@@ -54,7 +54,9 @@ uv run python test/agent_rag_user_flow.py --report /tmp/agent-rag-user-flow.json
 ```
 
 它需要既有的 `AGENT_TEST_*` 和 `RAG_TEST_*` 配置；其中 Agent 与 RAG 测试账号应为同一
-用户，确保新建 Session 与知识库位于同一 Workspace。`--keep-resources` 仅用于失败诊断。
+用户，确保新建 Session 与知识库位于同一 Workspace。可选的
+`RAG_TEST_RERANKER_BASE_URL`、`RAG_TEST_RERANKER_MODEL` 和 `RAG_TEST_RERANKER_API_KEY` 会先在
+知识库配置 vLLM reranker，再验证 Runtime `rag_search` 仍可完成检索。`--keep-resources` 仅用于失败诊断。
 
 如果 Docker 日志出现 `EACCES: permission denied, open '/opt/pi-runtime/package.json'`，说明镜像是在源文件为 `0600` 时构建的旧版本。更新 Dockerfile 后重新构建并导入镜像，再调用 `POST /api/v1/runtime:recreate`；不要通过让用户 Runtime 以 root 身份运行来绕过该问题。
 

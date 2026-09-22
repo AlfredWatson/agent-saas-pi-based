@@ -105,6 +105,9 @@ memory-bank
 /logs/**
 /pi-main/
 /agent-runtime/node_modules/**
+/frontend/node_modules/**
+/frontend/playwright-report/**
+/frontend/test-results/**
 /agent-runtime/.runtime-data/**
 .runtime-data/**
 /test/files/**

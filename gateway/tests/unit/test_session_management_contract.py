@@ -1,0 +1,98 @@
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
+
+import pytest
+from fastapi import HTTPException
+
+from app.api.v1 import sessions
+
+
+def test_session_title_rejects_whitespace_after_normalization():
+    class NeverCalled:
+        async def scalar(self, _query):
+            raise AssertionError("whitespace title must fail before querying")
+
+    async def run() -> None:
+        with pytest.raises(HTTPException) as error:
+            await sessions.update_session(
+                uuid4(),
+                sessions.SessionTitleInput(title="   "),
+                SimpleNamespace(id=uuid4()),
+                NeverCalled(),
+            )
+        assert error.value.status_code == 422
+        assert error.value.detail == "invalid_session_title"
+
+    asyncio.run(run())
+
+
+def test_rendered_session_keeps_legacy_fields_and_exposes_ui_metadata():
+    session_id = uuid4()
+    workspace_id = uuid4()
+    profile_id = uuid4()
+    run_id = uuid4()
+    rendered = sessions.render_session(
+        SimpleNamespace(
+            id=session_id,
+            status="ready",
+            title="Plan UI",
+            workspace_id=workspace_id,
+            profile_id=profile_id,
+            created_at="created",
+            updated_at="updated",
+        ),
+        ["kb-b", "kb-a"],
+        SimpleNamespace(
+            id=run_id,
+            status="completed",
+            error=None,
+            started_at="started",
+            finished_at="finished",
+        ),
+    )
+    assert rendered["id"] == str(session_id)
+    assert rendered["knowledge_base_ids"] == ["kb-a", "kb-b"]
+    assert rendered["workspace_id"] == str(workspace_id)
+    assert rendered["profile_id"] == str(profile_id)
+    assert rendered["latest_run"] == {
+        "id": str(run_id),
+        "status": "completed",
+        "error": None,
+        "started_at": "started",
+        "finished_at": "finished",
+    }
+
+
+def test_idle_session_delete_removes_projection_rows_without_runtime(monkeypatch):
+    session = SimpleNamespace(id=uuid4(), pi_session_file_key=None)
+
+    class Database:
+        def __init__(self) -> None:
+            self.executed = 0
+            self.deleted = None
+            self.committed = False
+
+        async def scalar(self, _query):
+            return None
+
+        async def execute(self, _query):
+            self.executed += 1
+
+        async def delete(self, value):
+            self.deleted = value
+
+        async def commit(self):
+            self.committed = True
+
+    database = Database()
+    monkeypatch.setattr(sessions, "owned", AsyncMock(return_value=session))
+
+    async def run() -> None:
+        assert await sessions.delete_session(session.id, SimpleNamespace(id=uuid4()), database) is None
+
+    asyncio.run(run())
+    assert database.executed == 3
+    assert database.deleted is session
+    assert database.committed

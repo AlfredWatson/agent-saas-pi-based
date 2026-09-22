@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { config } from "./config.js";
 import { tenantFrom } from "./auth/internal-auth.js";
 import { SessionRegistry } from "./sessions/session-registry.js";
-import { createSession, deleteWorkspaceData, ensureRuntimeHome, InvalidSessionFileKeyError, type SessionInput, type WorkspaceSessionFile } from "./sessions/session-factory.js";
+import { createSession, deleteSessionData, deleteWorkspaceData, ensureRuntimeHome, InvalidSessionFileKeyError, type SessionInput, type WorkspaceSessionFile } from "./sessions/session-factory.js";
 import { projectMessageEnd, type CompletedTool } from "./sessions/event-projection.js";
 import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import {
@@ -93,6 +93,22 @@ app.delete<{ Params: { workspaceKey: string }; Body: { sessions?: WorkspaceSessi
 		throw error;
 	}
 	for (const sessionId of sessionIds) registry.delete(sessionId);
+	return reply.code(204).send();
+});
+app.delete<{ Params: { id: string }; Body: { session_file_key?: string } }>("/internal/v1/sessions/:id", async (request, reply) => {
+	const tenant = authenticated(request, reply); if (!tenant) return;
+	if (typeof request.body?.session_file_key !== "string") return reply.code(422).send({ error: "invalid_session_delete_request" });
+	const managed = registry.get(request.params.id);
+	// Do not reveal whether another tenant happens to have this in-memory ID.
+	if (managed && managed.tenant !== tenant) return reply.code(404).send({ error: "session_not_found" });
+	if (managed?.busy) return reply.code(409).send({ error: "session_busy" });
+	try {
+		await deleteSessionData(request.body.session_file_key);
+	} catch (error) {
+		if (error instanceof InvalidSessionFileKeyError) return reply.code(422).send({ error: "invalid_session_delete_request" });
+		throw error;
+	}
+	registry.delete(request.params.id);
 	return reply.code(204).send();
 });
 app.get<{ Params: { workspaceKey: string } }>("/internal/v1/workspaces/:workspaceKey/files", async (request, reply) => {

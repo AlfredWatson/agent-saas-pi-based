@@ -50,6 +50,12 @@ export async function deleteWorkspaceData(workspaceKey: string, sessions: Worksp
 	await rm(workspace, { recursive: true, force: true });
 }
 
+/** Delete a single validated Pi trajectory without touching its Workspace. */
+export async function deleteSessionData(sessionFileKey: string): Promise<void> {
+	const sessions = runtimePath("sessions");
+	await rm(sessionFilePath(sessionFileKey, sessions), { force: true });
+}
+
 /** Runtime credentials deliberately live only in this ModelRuntime instance. */
 export async function createSession(tenant: string, sessionId: string, input: SessionInput): Promise<ManagedSession> {
 	const workspace = workspacePath(input.workspace_key);
