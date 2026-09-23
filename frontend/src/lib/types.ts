@@ -42,5 +42,7 @@ export type GraphEdge = { id: string; source_node_id: string; target_node_id: st
 export type GraphArtifact = { id: string; name: string; kind: string; status?: string; [key: string]: unknown };
 export type GraphDetail = { id: string; name: string; kind: string; nodes: GraphNode[]; edges: GraphEdge[] };
 export type RetrievalItem = { document_id?: string; chunk_id?: string; score?: number; retrieval_score?: number; source?: string; text?: string; [key: string]: unknown };
-export type RetrievalResult = { mode: string; items?: RetrievalItem[]; [key: string]: unknown };
+export type RetrievalResult =
+  | { mode: "vector" | "hybrid"; items: RetrievalItem[]; rerank: { configured: boolean; applied: boolean; error: string | null } }
+  | { mode: "graph"; nodes: GraphNode[]; edges: GraphEdge[]; evidence: Array<{ document_id: string; chunk_id: string; node_id: string | null; edge_id: string | null }> };
 export type SseEvent = { name: string; data: Record<string, unknown> };

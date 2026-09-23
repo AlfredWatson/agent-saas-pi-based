@@ -19,6 +19,12 @@ async function mockApi(page: import("@playwright/test").Page) {
     if (path.endsWith("/sessions")) return json({ items: [session] });
     if (path.endsWith("/workspaces/workspace-1/available-models")) return json({ items: [{ id: "model-1", provider_id: "openai", name: "GPT Test", thinking_levels: ["low", "medium", "high"], provider_binding_id: "binding-1", binding_name: "测试 Binding" }, { id: "model-2", provider_id: "openai", name: "GPT Alternate", thinking_levels: [], provider_binding_id: "binding-2", binding_name: "备用 Binding" }] });
     if (path.endsWith("/workspaces/workspace-1/knowledge-bases/kb-1/documents")) return json({ items: [document] });
+    if (path.endsWith("/workspaces/workspace-1/knowledge-bases/kb-1/retrieve") && method === "POST") {
+      const { mode } = route.request().postDataJSON() as { mode: string };
+      return mode === "graph"
+        ? json({ mode, nodes: [{ id: "node-1", name: "产品", entity_type: "entity" }], edges: [{ id: "edge-1", source_node_id: "node-1", target_node_id: "node-2", relation: "服务" }], evidence: [{ document_id: document.id, chunk_id: "chunk-1", node_id: "node-1", edge_id: null }] })
+        : json({ mode, items: [{ document_id: document.id, chunk_id: "chunk-1", score: 0.91, retrieval_score: 0.83, source: "vector", text: "检索命中的正文" }], rerank: { configured: true, applied: true, error: null } });
+    }
     if (path.endsWith("/workspaces/workspace-1/knowledge-bases/kb-1/models")) return json({ items: [] });
     if (path.endsWith("/workspaces/workspace-1/knowledge-bases/kb-1/graphs/graph-1")) return json({ id: "graph-1", name: "产品关系图", kind: "document", nodes: [{ id: "node-1", name: "产品", entity_type: "entity" }, { id: "node-2", name: "用户", entity_type: "entity" }], edges: [{ id: "edge-1", source_node_id: "node-1", target_node_id: "node-2", relation: "服务" }] });
     if (path.endsWith("/workspaces/workspace-1/knowledge-bases/kb-1/graphs")) return json({ items: [{ id: "graph-1", name: "产品关系图", kind: "document" }] });
@@ -114,4 +120,23 @@ test("knowledge settings and chat composer expose the requested controls", async
   await page.getByTitle("发送").click();
   await expect(page.getByText("你好", { exact: true })).toBeVisible();
   await expect(page.getByText("流式回复", { exact: true })).toBeVisible();
+});
+
+test("retrieval results render for document and graph modes without blanking the workbench", async ({ page }) => {
+  await mockApi(page); await signIn(page);
+  const pageErrors: Error[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error));
+  await page.getByText("产品文档", { exact: true }).click();
+  await page.getByRole("button", { name: "检索实验" }).click();
+  await page.getByRole("textbox", { name: "查询" }).fill("产品");
+  await page.getByRole("button", { name: "运行检索" }).click();
+  await expect(page.getByText("检索命中的正文")).toBeVisible();
+  await expect(page.getByText("score 0.9100")).toBeVisible();
+  await page.getByRole("combobox", { name: "模式" }).selectOption("graph");
+  await page.getByRole("button", { name: "运行检索" }).click();
+  await expect(page.getByText("模式：graph")).toBeVisible();
+  await expect(page.getByText("节点 · entity")).toBeVisible();
+  await expect(page.getByText("来源：document-uuid-1 / chunk-1")).toBeVisible();
+  await expect(page.getByRole("button", { name: "检索实验" })).toBeVisible();
+  expect(pageErrors).toEqual([]);
 });

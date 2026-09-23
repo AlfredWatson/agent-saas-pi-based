@@ -118,7 +118,7 @@ export const api = {
   ragModels: (workspaceId: string, kbId: string) => request<{ items: RagModel[] }>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/models`),
   setRagModel: (workspaceId: string, kbId: string, kind: "embedding" | "llm" | "reranker", body: Record<string, string | null>) => request<RagModel>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/${kind}-model`, putJson(body)),
   deleteReranker: (workspaceId: string, kbId: string) => request<void>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/reranker-model`, { method: "DELETE" }),
-  retrieve: (workspaceId: string, kbId: string, body: Record<string, unknown>) => request<{ knowledge_base: KnowledgeBase; result: RetrievalResult }>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/retrieve`, json(body)),
+  retrieve: (workspaceId: string, kbId: string, body: Record<string, unknown>) => request<RetrievalResult>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/retrieve`, json(body)),
   graphs: (workspaceId: string, kbId: string) => request<{ items: GraphArtifact[] }>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/graphs`),
   graph: (workspaceId: string, kbId: string, graphId: string) => request<GraphDetail>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/graphs/${graphId}`),
 };

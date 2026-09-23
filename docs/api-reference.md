@@ -1,6 +1,6 @@
 # Pi SaaS Platform API 文档
 
-> 版本：基于当前仓库源码整理，日期：2026-09-18。
+> 版本：基于当前仓库源码整理，日期：2026-09-23。
 >
 > 公共 API 根路径：`http(s)://<gateway-host>/api/v1`。本文描述 FastAPI Gateway 的对外契约；`/internal/v1/*` 是 Gateway 与 Runtime 的内部协议，不能经公网或客户端直接调用。
 
@@ -36,10 +36,13 @@ ID 均为 UUID。时间字段为带时区的 ISO 8601 时间。所有资源按�
 注册会同时创建并选中名为 `default` 的 Workspace。创建 Provider Binding 不会请求模型；首次成功 Chat 才写入该 Binding 的 `verified_at`。
 
 ```text
-register/login → providers → provider-bindings → models
-       → agent-profiles → workspaces → sessions → messages:stream
+register/login → workspaces → providers → Workspace provider-bindings
+       → available-models → sessions → sessions/{id}/model-config → messages:stream
        → sessions/{id}/messages
 ```
+
+`agent-profiles` 是兼容旧客户端的可选路径。新客户端可以直接创建 Session，随后设置该
+Session 的模型配置；Binding、Session 与知识库必须属于同一个 Workspace。
 
 可使用统一的真实模型黑盒验收流程验证此链路。该流程使用既有专用测试账号，创建并清理
 独立的 Workspace、Binding、Profile 和 Session，并证明 Agent 通过工具读取上传的 XLSX：
@@ -100,7 +103,7 @@ Gateway 默认使用 `.env` 的 `GATEWAY_HOST` 和 `GATEWAY_PORT`；可用
 
 ### `POST /provider-bindings`
 
-创建 Provider 凭据绑定。密钥经服务端 AEAD 加密后写入 PostgreSQL；读取接口不返回密钥、密文或 nonce。
+在**当前 Workspace** 创建 Provider 凭据绑定。密钥经服务端 AEAD 加密后写入 PostgreSQL；读取接口不返回密钥、密文或 nonce。建议新客户端使用下述显式 Workspace 路径。
 
 ```json
 {
@@ -113,16 +116,18 @@ Gateway 默认使用 `.env` 的 `GATEWAY_HOST` 和 `GATEWAY_PORT`；可用
 成功返回 `201`：
 
 ```json
-{"id":"<binding-uuid>","provider_id":"faux","status":"active"}
+{"id":"<binding-uuid>","workspace_id":"<workspace-uuid>","provider_id":"faux","display_name":"开发测试","status":"active"}
 ```
 
-这一步只验证 Provider 目录和非空密钥，**不**访问上游 Provider。当前 Gateway 对 Runtime 的 HTTP 校验异常没有统一的公开错误转换；调用方不应把 Provider 校验失败的具体 HTTP 状态当作稳定契约。
+`display_name` 去除首尾空白后必须为 1–128 字符，否则返回 `422 invalid_binding_name`。这一步只验证 Provider 目录和非空密钥，**不**访问上游 Provider。当前 Gateway 对 Runtime 的 HTTP 校验异常没有统一的公开错误转换；调用方不应把 Provider 校验失败的具体 HTTP 状态当作稳定契约。
 
 ### `GET /provider-bindings`
 
 ```json
-{"items":[{"id":"<uuid>","provider_id":"faux","display_name":"开发测试","status":"active"}]}
+{"items":[{"id":"<uuid>","workspace_id":"<workspace-uuid>","provider_id":"faux","display_name":"开发测试","status":"active"}]}
 ```
+
+只列出当前 Workspace 的 `active` Binding；切换 Workspace 后，列表随之切换。
 
 ### `GET /provider-bindings/{binding_id}/models`
 
@@ -141,13 +146,28 @@ Binding 必须属于当前用户且是 `active`：
 
 ### `DELETE /provider-bindings/{binding_id}`
 
-软禁用 Binding，成功返回 `204`（无响应体）。不存在或不属于当前用户返回 `404`。禁用后不可创建/更新引用该 Binding 的 Profile，也不能运行引用它的 Session。
+软禁用 Binding，成功返回 `204`（无响应体），重复禁用也返回 `204`。不存在或不属于当前用户返回 `404`；仍被同一 Workspace 的 Session 引用时返回 `409 provider_binding_in_use`。禁用后不可创建/更新引用该 Binding 的 Profile，也不能运行引用它的 Session。
+
+### 显式 Workspace 的 Binding 与模型接口
+
+新客户端应以 `workspace_id` 固定操作目标，避免切换当前 Workspace 后误用凭据：
+
+| 接口 | 行为 |
+| --- | --- |
+| `GET /workspaces/{workspace_id}/provider-bindings` | 列出该 Workspace 的 active Binding。 |
+| `POST /workspaces/{workspace_id}/provider-bindings` | 请求体同上；成功 `201`。 |
+| `GET /workspaces/{workspace_id}/provider-bindings/{binding_id}` | 读取脱敏 Binding 对象。 |
+| `GET /workspaces/{workspace_id}/provider-bindings/{binding_id}/models` | 读取该 active Binding 的模型目录。 |
+| `DELETE /workspaces/{workspace_id}/provider-bindings/{binding_id}` | 软禁用；引用中的 Binding 返回 `409 provider_binding_in_use`。 |
+| `GET /workspaces/{workspace_id}/available-models` | 聚合该 Workspace 所有 active Binding 的模型，按 Binding 名称和 ID 排序。 |
+
+`available-models` 返回 `{"items":[{"provider_binding_id":"<uuid>","binding_name":"开发测试","id":"faux-1","provider_id":"faux","name":"Faux 1","thinking_levels":["high"]}]}`。跨 Workspace 的 Binding 在显式路径下返回 `404 binding_not_found`；未拥有的 Workspace 返回 `404 workspace_not_found`。无 Workspace 前缀的兼容路径中，列表和创建操作作用于当前 Workspace；按 Binding ID 读取模型及删除操作按当前用户拥有的 Binding 定位。
 
 ## 5. Agent Profile 与工作区
 
 ### `POST /agent-profiles`
 
-创建模型配置。模型和推理等级会与 Runtime 返回的模型目录实时校验。
+创建旧版 Profile 模型配置。Profile 继承其 Binding 所属 Workspace；模型和推理等级会与 Runtime 返回的模型目录实时校验。新客户端可跳过 Profile，直接使用 Session 模型配置。
 
 ```json
 {
@@ -158,21 +178,23 @@ Binding 必须属于当前用户且是 `active`：
 }
 ```
 
-成功：`201 {"id":"<profile-uuid>","name":"faux-high","model_id":"faux-1"}`。
+成功返回 `201` 和完整 Profile 对象，包含 `id`、`workspace_id`、`name`、
+`provider_binding_id`、`model_id`、`thinking_level`。
 
 失败包括：`422 invalid_binding`、`422 invalid_model`、`422 invalid_thinking_level`。`thinking_level` 可以省略或为 `null`，只能取模型提供的 `thinking_levels`。
 
 ### `GET /agent-profiles`
 
 ```json
-{"items":[{"id":"<uuid>","name":"faux-high","model_id":"faux-1","thinking_level":"high"}]}
+{"items":[{"id":"<uuid>","workspace_id":"<workspace-uuid>","name":"faux-high",
+"provider_binding_id":"<binding-uuid>","model_id":"faux-1","thinking_level":"high"}]}
 ```
 
-按创建时间倒序返回。为减少密钥/配置关联暴露，该响应不返回 `provider_binding_id`。
+仅列出当前 Workspace 的 Profile，按创建时间倒序返回；不包含 API key。
 
 ### `PUT /agent-profiles/{profile_id}`
 
-请求体与创建相同。成功：`200 {"id":"<uuid>","name":"faux-high"}`；不存在/非本人：`404 profile_not_found`；Binding、模型或推理等级无效：`422`。
+请求体与创建相同。成功返回完整 Profile 对象；不存在/非本人：`404 profile_not_found`；Binding、模型或推理等级无效：`422`；新 Binding 属于其他 Workspace 时返回 `422 profile_workspace_mismatch`。
 
 ### `DELETE /agent-profiles/{profile_id}`
 
@@ -186,9 +208,9 @@ Binding 必须属于当前用户且是 `active`：
 {"items":[{"id":"<workspace-uuid>","name":"default","status":"active","is_current":true}]}
 ```
 
-注册时自动创建并选中 `default`。Workspace 名称同时是容器内
-`/runtime-data/workspaces/<name>/` 的目录名，必须匹配
-`^[a-z0-9][a-z0-9_-]{0,63}$`；同一用户内不得重名。
+注册时自动创建并选中 `default`。名称是展示字段，服务端会做 Unicode NFKC 规范化并去除
+首尾空白；结果必须为 1–128 字符且不能包含 Unicode 控制字符。同一用户内不得重名。
+Runtime 使用独立的内部 storage key 作为目录名，公开 API 不返回该 key。
 
 ### `POST /workspaces`
 
@@ -219,10 +241,18 @@ Binding 必须属于当前用户且是 `active`：
 
 列表允许在 Agent Run 执行期间调用。
 
-三个文件接口都会按需启动当前用户的 Runtime；因此 Docker、镜像或 Runtime
+文件接口都会按需启动当前用户的 Runtime；因此 Docker、镜像或 Runtime
 健康检查失败时可返回 `503 {"detail":"runtime_unavailable"}`。Workspace 不存在
 或不属于当前用户时返回 `404 workspace_not_found`；已不可用时返回
 `409 workspace_unavailable`。
+
+### `GET /workspaces/{workspace_id}/files/content?path=...`
+
+下载指定普通文件。成功返回 `200 application/octet-stream` 字节流，并设置
+`Content-Disposition: attachment`；若 Runtime 提供文件大小，还会设置 `Content-Length`。
+`path` 是与文件列表相同的 POSIX 相对路径，需做 URL 编码。文件不存在返回
+`404 file_not_found`；路径或文件类型不合法返回 `422 invalid_file_path` 或
+`422 unsupported_file_type`。运行中的 Agent Run 不阻止下载。
 
 ### `POST /workspaces/{workspace_id}/files`
 
@@ -278,13 +308,13 @@ Binding 必须属于当前用户且是 `active`：
 
 ### `POST /sessions`
 
-创建逻辑 Session，不会立刻将 Provider 密钥交给 Runtime，也不会强制创建容器。可选
+创建逻辑 Session，不会立刻将 Provider 密钥交给 Runtime，也不会强制创建容器。`profile_id`
+可省略；不使用旧版 Profile 的客户端需在首次 Chat 前调用模型配置接口。可选
 `knowledge_base_ids` 是该 Session 固定可调用的知识库白名单；每一项都必须属于同一
 用户和 Workspace，绑定后不可修改，需更换知识库时创建新 Session。
 
 ```json
 {
-  "profile_id":"<profile-uuid>",
   "workspace_id":"<workspace-uuid>",
   "knowledge_base_ids":["<knowledge-base-uuid>"]
 }
@@ -294,8 +324,25 @@ Binding 必须属于当前用户且是 `active`：
 `knowledge_base_ids` 或传空数组不会注册 RAG 工具；最多 20 项且不得重复。未配置
 `RUNTIME_GATEWAY_BASE_URL` 时，带知识库绑定的请求返回 `409 agent_rag_unavailable`；
 越权、跨 Workspace、失效或不存在的知识库统一返回 `422 invalid_knowledge_base_binding`。
-成功：`201 {"id":"<session-uuid>","status":"ready","knowledge_base_ids":[...]}`。
-任一 Profile/Workspace ID 不属于当前用户时为 `422 invalid_profile_or_workspace`。
+成功返回完整 Session 对象；未设置模型的 Session 中 `profile_id`、
+`provider_binding_id`、`model_id`、`thinking_level` 为 `null`，`model_configured` 为
+`false`。Workspace 无效返回 `422 invalid_workspace`；提供的 Profile 无效或属于其他
+Workspace 返回 `422 invalid_profile_or_workspace`。提供 Profile 时，模型配置会复制到
+Session，此后可独立调整。
+
+### `PUT /sessions/{session_id}/model-config`
+
+设置或更新该 Session 的模型配置，成功返回完整 Session 对象：
+
+```json
+{"provider_binding_id":"<binding-uuid>","model_id":"faux-1","thinking_level":"high"}
+```
+
+`thinking_level` 可省略或为 `null`。Binding 必须 active 且属于 Session 的 Workspace；
+模型及推理等级会通过 Runtime 目录校验。无效 Binding、模型或推理等级分别返回
+`422 invalid_binding`、`422 invalid_model`、`422 invalid_thinking_level`；Session 有
+运行中的 Run 时返回 `409 session_busy`。未配置模型就调用消息流接口返回
+`409 session_model_not_configured`。
 
 ### `GET /sessions`
 
@@ -305,9 +352,13 @@ Binding 必须属于当前用户且是 `active`：
 {"items":[{
   "id":"<uuid>","status":"ready","title":null,
   "knowledge_base_ids":["<uuid>"],"workspace_id":"<workspace-uuid>",
-  "profile_id":"<profile-uuid>","created_at":"...","updated_at":"...",
+  "profile_id":null,"provider_binding_id":"<binding-uuid>",
+  "model_id":"faux-1","thinking_level":"high","model_configured":true,
+  "created_at":"...","updated_at":"...",
   "latest_run":{"id":"<run-uuid>","status":"completed","error":null,
-                "started_at":"...","finished_at":"..."}
+                "started_at":"...","finished_at":"...",
+                "provider_binding_id":"<binding-uuid>","provider_id":"faux",
+                "model_id":"faux-1","thinking_level":"high"}
 }]}
 ```
 
@@ -657,6 +708,20 @@ chunking 已 queued、running 或 succeeded 时返回 `409 document_chunking_con
 
 删除原文档及其 blocks、chunks、向量、文档图谱、关联合并图谱和缓存，成功 `204`。
 
+### `POST .../{knowledge_base_id}/documents:delete`
+
+对选中的文档逐个删除。请求为 `{"document_ids":["<uuid>"]}`，允许 1–100 项；
+每项独立处理，一个文档失败不阻止其他文档删除。成功返回 `200`，例如：
+
+```json
+{"deleted":1,"failed":1,"items":[
+  {"document_id":"<uuid>","status":"deleted"},
+  {"document_id":"<uuid>","status":"failed","error_code":"document_not_found"}
+]}
+```
+
+`200` 表示批次已处理，应检查 `failed` 和逐项状态。
+
 ### `DELETE .../{knowledge_base_id}/documents/{document_id}/chunks`
 
 删除 chunks 及全部派生 vectors/graphs/cache，并重置相关阶段，成功 `204`。这也是允许重新
@@ -696,6 +761,23 @@ parsing 使用按文档指定处理后端的请求体：
 | `POST .../{knowledge_base_id}/jobs/chunking` | parsing 成功、blocks 非空；语义策略还需已验证 embedding | 同上 |
 | `POST .../{knowledge_base_id}/jobs/vectorization` | chunking 成功、已验证 embedding | 同上 |
 | `POST .../{knowledge_base_id}/jobs/graph-extraction` | chunking 成功、已验证 LLM | 同上 |
+
+### `POST .../{knowledge_base_id}/jobs/{kind}:batch`
+
+按文档独立提交同一阶段，`kind` 为 `parsing`、`chunking`、`vectorization` 或
+`graph-extraction`；不支持的值返回 `404 job_kind_not_found`。请求体为
+`{"document_ids":["<uuid>"]}`（1–100 项）。`parsing` 使用默认处理后端；需要逐文档指定
+`processor_backend` 时应调用上表中的常规 parsing 接口。返回 `202`，例如：
+
+```json
+{"queued":1,"failed":1,"items":[
+  {"document_id":"<uuid>","status":"queued","job_ids":["<job-uuid>"]},
+  {"document_id":"<uuid>","status":"failed","error_code":"document_not_chunked"}
+]}
+```
+
+常规阶段接口对一批文档执行统一校验；本接口逐项入队，一个文档失败不阻止其他文档。
+`202` 只表示已提交批次；仍需检查逐项结果并轮询任务状态。
 
 已 `queued`、`running` 或 `succeeded` 的同阶段文档不能重复提交；对应处理失败后可重新提交。
 parsing/chunking 不使用缓存，失败时不发布 partial blocks/chunks。向量化和图谱提取会复用 Redis
