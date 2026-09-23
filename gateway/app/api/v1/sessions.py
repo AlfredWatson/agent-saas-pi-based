@@ -231,12 +231,15 @@ async def validate_model_config(
     workspace_id: UUID,
     body: SessionModelConfigInput,
 ) -> ProviderBinding:
+    # Serialize model changes with Binding disablement.  Once this lock has
+    # been acquired, a concurrent delete either observes this Session's new
+    # reference or this validation sees the disabled Binding.
     binding = await db.scalar(select(ProviderBinding).where(
         ProviderBinding.id == body.provider_binding_id,
         ProviderBinding.user_id == user_id,
         ProviderBinding.workspace_id == workspace_id,
         ProviderBinding.status == "active",
-    ))
+    ).with_for_update())
     if binding is None:
         raise HTTPException(422, "invalid_binding")
     models = await RuntimeClient().models(str(user_id), binding.provider_id)

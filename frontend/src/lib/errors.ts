@@ -30,6 +30,8 @@ const messages: Record<string, string> = {
   document_processing: "文档正在处理，暂不能执行此操作。",
   file_exists: "目标路径已存在；如需替换，请确认覆盖。",
   file_too_large: "文件超过当前工作区的单文件限制。",
+  invalid_binding_name: "请填写 Provider Binding 的显示名。",
+  provider_binding_in_use: "仍有会话正在使用该 Provider Binding，请先切换这些会话的模型。",
 };
 
 export function readableError(error: unknown): string {

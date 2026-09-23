@@ -34,6 +34,25 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function download(path: string): Promise<Blob> {
+  const headers = new Headers({ Accept: "application/octet-stream" });
+  const token = accessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(`${apiBase}${path}`, { headers });
+  if (response.status === 401) {
+    clearToken();
+    window.dispatchEvent(new Event("pi-saas:unauthorized"));
+  }
+  if (!response.ok) {
+    let details: unknown;
+    try { details = await response.json(); } catch { details = await response.text(); }
+    const code = typeof details === "object" && details !== null && "detail" in details && typeof (details as { detail: unknown }).detail === "string"
+      ? (details as { detail: string }).detail : "request_failed";
+    throw new ApiError(response.status, code, details);
+  }
+  return response.blob();
+}
+
 const json = (body: unknown): RequestInit => ({ method: "POST", body: JSON.stringify(body) });
 const putJson = (body: unknown): RequestInit => ({ method: "PUT", body: JSON.stringify(body) });
 
@@ -51,6 +70,7 @@ export const api = {
     return request(`/workspaces/${id}/files`, { method: "POST", body: form });
   },
   deleteWorkspaceFile: (id: string, path: string) => request<void>(`/workspaces/${id}/files?path=${encodeURIComponent(path)}`, { method: "DELETE" }),
+  downloadWorkspaceFile: (id: string, path: string) => download(`/workspaces/${id}/files/content?path=${encodeURIComponent(path)}`),
   providers: () => request<{ providers: Provider[] }>("/providers"),
   workspaceBindings: (workspaceId: string) => request<{ items: ProviderBinding[] }>(`/workspaces/${workspaceId}/provider-bindings`),
   createWorkspaceBinding: (workspaceId: string, body: { provider_id: string; display_name: string; api_key: string }) => request<ProviderBinding>(`/workspaces/${workspaceId}/provider-bindings`, json(body)),

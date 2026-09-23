@@ -31,7 +31,10 @@ export type KnowledgeBase = {
   concurrency: { parsing: number; chunking: number; embedding: number; graph: number };
 };
 export type Stage = { status: string; progress: number; message: string | null; error: string | null; updated_at: string | null };
-export type RagDocument = { id: string; filename: string; status: string; stages: Record<string, Stage>; [key: string]: unknown };
+export type RagDocument = {
+  id: string; original_filename: string; stored_filename: string; status: string;
+  stages: Record<string, Stage>; [key: string]: unknown;
+};
 export type ProcessingJob = { id: string; kind: string; status: string; message: string | null; error: string | null; document_ids?: string[]; [key: string]: unknown };
 export type RagModel = { kind: "embedding" | "llm" | "reranker" | string; protocol: string; base_url: string; model_name: string; thinking_effort: string | null; verified_at: string | null; [key: string]: unknown };
 export type GraphNode = { id: string; name: string; entity_type?: string; description?: string };

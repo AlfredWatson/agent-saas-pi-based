@@ -1,9 +1,12 @@
 import asyncio
 import unicodedata
+from pathlib import PurePosixPath
+from urllib.parse import quote
 from uuid import uuid4
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -206,6 +209,33 @@ async def list_workspace_files(
         }
     except RuntimeWorkspaceFileError as exc:
         raise HTTPException(exc.status_code, exc.detail) from exc
+
+
+@router.get("/{workspace_id}/files/content")
+async def download_workspace_file(
+    workspace_id: UUID,
+    path: str,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    workspace = await owned_workspace(db, workspace_id, user.id)
+    if workspace.status != "active":
+        raise HTTPException(409, "workspace_unavailable")
+    try:
+        size, content = await RuntimeClient().download_workspace_file(
+            str(user.id), workspace.storage_key, path
+        )
+    except RuntimeWorkspaceFileError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    filename = PurePosixPath(path).name or "download"
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+    }
+    if size is not None:
+        headers["Content-Length"] = str(size)
+    return StreamingResponse(
+        content, media_type="application/octet-stream", headers=headers
+    )
 
 
 @router.post("/{workspace_id}/files", status_code=201)

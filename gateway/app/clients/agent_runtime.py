@@ -161,6 +161,49 @@ class RuntimeClient:
         self._raise_file_operation_error(response)
         return response.json()["items"]
 
+    async def download_workspace_file(
+        self, user_id: str, workspace_key: str, path: str
+    ) -> tuple[int | None, AsyncIterator[bytes]]:
+        """Return an open Runtime stream whose iterator closes its HTTP client."""
+        base_url = await self._base_url(user_id)
+        client = httpx.AsyncClient(timeout=None, trust_env=False)
+        try:
+            response = await client.send(
+                client.build_request(
+                    "GET",
+                    f"{base_url}/internal/v1/workspaces/{workspace_key}/files/content",
+                    headers=self._headers(user_id),
+                    params={"path": path},
+                ),
+                stream=True,
+            )
+        except httpx.HTTPError as exc:
+            await client.aclose()
+            raise RuntimeUnavailableError(
+                "runtime_workspace_file_download_failed"
+            ) from exc
+        try:
+            self._raise_file_operation_error(response)
+        except Exception:
+            await response.aclose()
+            await client.aclose()
+            raise
+
+        try:
+            size = int(response.headers["content-length"])
+        except (KeyError, ValueError):
+            size = None
+
+        async def chunks() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in response.aiter_bytes():
+                    yield chunk
+            finally:
+                await response.aclose()
+                await client.aclose()
+
+        return size, chunks()
+
     async def upload_workspace_file(
         self,
         user_id: str,

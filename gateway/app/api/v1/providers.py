@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...api.dependencies import current_user
 from ...clients.agent_runtime import RuntimeClient
 from ...core.encryption import encrypt
-from ...db.models import ProviderBinding, User, Workspace
+from ...db.models import AgentSession, ProviderBinding, User, Workspace
 from ...db.session import get_db
 from .workspaces import current_workspace, owned_workspace
 
@@ -18,7 +18,9 @@ router = APIRouter(tags=["providers"])
 
 class BindingInput(BaseModel):
     provider_id: str
-    display_name: str
+    # Keep this optional at schema level so all absent, empty, and whitespace
+    # values become the same explicit public error below.
+    display_name: str | None = None
     api_key: str
 
 
@@ -34,7 +36,7 @@ def render_binding(binding: ProviderBinding) -> dict:
 
 async def binding_in_workspace(
     db: AsyncSession, workspace_id: UUID, binding_id: UUID, user_id: UUID,
-    *, active: bool = False,
+    *, active: bool = False, lock: bool = False,
 ) -> ProviderBinding:
     filters = [
         ProviderBinding.id == binding_id,
@@ -43,7 +45,10 @@ async def binding_in_workspace(
     ]
     if active:
         filters.append(ProviderBinding.status == "active")
-    binding = await db.scalar(select(ProviderBinding).where(*filters))
+    statement = select(ProviderBinding).where(*filters)
+    if lock:
+        statement = statement.with_for_update()
+    binding = await db.scalar(statement)
     if binding is None:
         raise HTTPException(404, "binding_not_found")
     return binding
@@ -52,7 +57,7 @@ async def binding_in_workspace(
 async def create_binding(
     workspace: Workspace, body: BindingInput, user: User, db: AsyncSession
 ) -> dict:
-    name = body.display_name.strip()
+    name = (body.display_name or "").strip()
     if not name or len(name) > 128:
         raise HTTPException(422, "invalid_binding_name")
     await RuntimeClient().accept_provider_binding(str(user.id), body.provider_id, body.api_key)
@@ -88,6 +93,7 @@ async def list_workspace_bindings(
         select(ProviderBinding).where(
             ProviderBinding.workspace_id == workspace_id,
             ProviderBinding.user_id == user.id,
+            ProviderBinding.status == "active",
         ).order_by(ProviderBinding.created_at.desc())
     )).all()
     return {"items": [render_binding(item) for item in rows]}
@@ -146,7 +152,18 @@ async def disable_workspace_binding(
     workspace_id: UUID, binding_id: UUID, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)
 ):
     await owned_workspace(db, workspace_id, user.id)
-    binding = await binding_in_workspace(db, workspace_id, binding_id, user.id)
+    binding = await binding_in_workspace(
+        db, workspace_id, binding_id, user.id, lock=True
+    )
+    if binding.status != "active":
+        return
+    in_use = await db.scalar(select(AgentSession.id).where(
+        AgentSession.workspace_id == workspace_id,
+        AgentSession.user_id == user.id,
+        AgentSession.provider_binding_id == binding.id,
+    ).limit(1))
+    if in_use is not None:
+        raise HTTPException(409, "provider_binding_in_use")
     binding.status = "disabled"
     await db.commit()
 
@@ -185,8 +202,17 @@ async def binding_models(binding_id: UUID, user: User = Depends(current_user), d
 async def delete_binding(binding_id: UUID, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     binding = await db.scalar(select(ProviderBinding).where(
         ProviderBinding.id == binding_id, ProviderBinding.user_id == user.id
-    ))
+    ).with_for_update())
     if binding is None:
         raise HTTPException(404, "binding_not_found")
+    if binding.status != "active":
+        return
+    in_use = await db.scalar(select(AgentSession.id).where(
+        AgentSession.workspace_id == binding.workspace_id,
+        AgentSession.user_id == user.id,
+        AgentSession.provider_binding_id == binding.id,
+    ).limit(1))
+    if in_use is not None:
+        raise HTTPException(409, "provider_binding_in_use")
     binding.status = "disabled"
     await db.commit()

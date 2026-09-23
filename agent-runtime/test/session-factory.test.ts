@@ -10,7 +10,7 @@ test("Faux sessions use stable tenant-agnostic data paths and Pi default coding 
 	const root = await mkdtemp(join(tmpdir(), "pi-saas-runtime-")); roots.push(root);
 	process.env.RUNTIME_DATA_ROOT = root;
 	const { createSession, deleteSessionData, deleteWorkspaceData, ensureRuntimeHome, InvalidSessionFileKeyError } = await import("../src/sessions/session-factory.js");
-	const { deleteWorkspaceFile, InvalidWorkspaceFilePathError, listWorkspaceFiles, uploadWorkspaceFile, WorkspaceFileExistsError, WorkspaceFileNotFoundError, UnsupportedWorkspaceFileTypeError } = await import("../src/workspaces/file-storage.js");
+	const { deleteWorkspaceFile, downloadWorkspaceFile, InvalidWorkspaceFilePathError, listWorkspaceFiles, uploadWorkspaceFile, WorkspaceFileExistsError, WorkspaceFileNotFoundError, UnsupportedWorkspaceFileTypeError } = await import("../src/workspaces/file-storage.js");
 	await ensureRuntimeHome();
 	const sessionId = "00000000-0000-0000-0000-000000000002";
 	const managed = await createSession("00000000-0000-0000-0000-000000000001", sessionId, { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", thinking_level: "low" });
@@ -52,6 +52,10 @@ test("Faux sessions use stable tenant-agnostic data paths and Pi default coding 
 	expect(await listWorkspaceFiles("workspace")).toMatchObject([{ path: "nested/note.txt", size_bytes: 5 }]);
 	await expect(uploadWorkspaceFile("workspace", "nested/note.txt", content("second"), false)).rejects.toBeInstanceOf(WorkspaceFileExistsError);
 	await expect(uploadWorkspaceFile("workspace", "../outside.txt", content("blocked"), false)).rejects.toBeInstanceOf(InvalidWorkspaceFilePathError);
+	const downloaded = await downloadWorkspaceFile("workspace", "nested/note.txt");
+	const chunks: Buffer[] = [];
+	for await (const chunk of downloaded.content) chunks.push(Buffer.from(chunk));
+	expect(Buffer.concat(chunks).toString("utf8")).toBe("first");
 	const replaced = await uploadWorkspaceFile("workspace", "nested/note.txt", content("second"), true);
 	expect(replaced).toMatchObject({ path: "nested/note.txt", size_bytes: 6, created: false });
 	expect(await readFile(join(root, "workspaces", "workspace", "nested", "note.txt"), "utf8")).toBe("second");
@@ -63,4 +67,6 @@ test("Faux sessions use stable tenant-agnostic data paths and Pi default coding 
 	await mkdir(join(root, "workspaces", "workspace", "linked"), { recursive: true });
 	await symlink(join(root, "workspaces", "other"), join(root, "workspaces", "workspace", "linked", "escape"));
 	await expect(uploadWorkspaceFile("workspace", "linked/escape/outside.txt", content("blocked"), false)).rejects.toBeInstanceOf(UnsupportedWorkspaceFileTypeError);
+	await expect(downloadWorkspaceFile("workspace", "linked/escape/keep.txt")).rejects.toBeInstanceOf(UnsupportedWorkspaceFileTypeError);
+	await expect(downloadWorkspaceFile("workspace", "missing.txt")).rejects.toBeInstanceOf(WorkspaceFileNotFoundError);
 });

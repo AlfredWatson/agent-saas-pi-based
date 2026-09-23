@@ -1,3 +1,4 @@
+import { createReadStream } from "node:fs";
 import { mkdir, mkdtemp, lstat, readdir, rename, rm, rmdir, unlink, open } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { config } from "../config.js";
@@ -28,6 +29,7 @@ export class WorkspaceFileTooLargeError extends Error {
 
 export type WorkspaceFile = { path: string; size_bytes: number; modified_at: string };
 export type UploadedWorkspaceFile = WorkspaceFile & { created: boolean };
+export type DownloadedWorkspaceFile = { content: ReturnType<typeof createReadStream>; size_bytes: number };
 
 const root = resolve(config.dataRoot);
 let mutationTail: Promise<void> = Promise.resolve();
@@ -171,6 +173,16 @@ export async function listWorkspaceFiles(workspaceKey: string): Promise<Workspac
 		}
 	}
 	return items.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+/** Open a regular workspace file only after applying the same path and
+ * symlink protections used by upload and deletion. */
+export async function downloadWorkspaceFile(workspaceKey: string, value: string): Promise<DownloadedWorkspaceFile> {
+	const { root: workspace, target, segments } = targetFor(workspaceKey, value);
+	await assertSafeParents(workspace, segments);
+	const entry = await regularFile(target);
+	if (!entry) throw new WorkspaceFileNotFoundError();
+	return { content: createReadStream(target), size_bytes: entry.size };
 }
 
 export async function uploadWorkspaceFile(workspaceKey: string, value: string, source: AsyncIterable<Uint8Array>, overwrite: boolean): Promise<UploadedWorkspaceFile> {

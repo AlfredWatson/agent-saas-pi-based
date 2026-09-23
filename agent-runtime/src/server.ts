@@ -8,6 +8,7 @@ import { projectMessageEnd, type CompletedTool } from "./sessions/event-projecti
 import { fauxProvider, getSupportedThinkingLevels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import {
 	deleteWorkspaceFile,
+	downloadWorkspaceFile,
 	InvalidWorkspaceFilePathError,
 	listWorkspaceFiles,
 	UnsupportedWorkspaceFileTypeError,
@@ -122,6 +123,19 @@ app.get<{ Params: { workspaceKey: string } }>("/internal/v1/workspaces/:workspac
 	if (!authenticated(request, reply)) return;
 	try {
 		return { items: await listWorkspaceFiles(request.params.workspaceKey) };
+	} catch (error) {
+		return fileError(reply, error);
+	}
+});
+app.get<{ Params: { workspaceKey: string }; Querystring: { path?: string } }>("/internal/v1/workspaces/:workspaceKey/files/content", async (request, reply) => {
+	if (!authenticated(request, reply)) return;
+	if (typeof request.query.path !== "string") return reply.code(422).send({ error: "invalid_file_path" });
+	try {
+		const file = await downloadWorkspaceFile(request.params.workspaceKey, request.query.path);
+		return reply
+			.header("content-type", "application/octet-stream")
+			.header("content-length", String(file.size_bytes))
+			.send(file.content);
 	} catch (error) {
 		return fileError(reply, error);
 	}
