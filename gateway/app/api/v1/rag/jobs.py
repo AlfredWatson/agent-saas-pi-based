@@ -267,6 +267,59 @@ async def submit_graph_extraction(
     )
 
 
+@router.post(
+    "/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/jobs/{kind}:batch",
+    status_code=202,
+)
+async def submit_batch_jobs(
+    kind: str,
+    workspace_id: UUID,
+    knowledge_base_id: UUID,
+    body: JobSubmit,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Best-effort workbench submission with an outcome for every row.
+
+    The existing stage endpoints remain all-or-nothing for API compatibility;
+    this explicit workbench endpoint queues each selected document separately.
+    """
+    if kind not in {"parsing", "chunking", "vectorization", "graph-extraction"}:
+        raise HTTPException(404, "job_kind_not_found")
+    items: list[dict] = []
+    for document_id in body.document_ids:
+        try:
+            if kind == "parsing":
+                result = await submit_parsing(
+                    workspace_id,
+                    knowledge_base_id,
+                    ParsingJobSubmit(items=[{"document_id": document_id}]),
+                    user,
+                    db,
+                )
+            elif kind == "chunking":
+                result = await submit_chunking(
+                    workspace_id, knowledge_base_id, JobSubmit(document_ids=[document_id]), user, db
+                )
+            elif kind == "vectorization":
+                result = await submit_vectorization(
+                    workspace_id, knowledge_base_id, JobSubmit(document_ids=[document_id]), user, db
+                )
+            else:
+                result = await submit_graph_extraction(
+                    workspace_id, knowledge_base_id, JobSubmit(document_ids=[document_id]), user, db
+                )
+            items.append({"document_id": str(document_id), "status": "queued", "job_ids": result["job_ids"]})
+        except HTTPException as exc:
+            await db.rollback()
+            items.append({"document_id": str(document_id), "status": "failed", "error_code": str(exc.detail)})
+    return {
+        "queued": sum(item["status"] == "queued" for item in items),
+        "failed": sum(item["status"] == "failed" for item in items),
+        "items": items,
+    }
+
+
 @router.get("/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/jobs")
 async def list_jobs(
     workspace_id: UUID,

@@ -38,7 +38,7 @@ _subscribers: dict[UUID, set[asyncio.Queue[tuple[str, dict]]]] = {}
 
 
 class SessionInput(BaseModel):
-    profile_id: UUID
+    profile_id: UUID | None = None
     workspace_id: UUID | None = None
     knowledge_base_ids: list[UUID] = Field(default_factory=list, max_length=20)
 
@@ -58,6 +58,12 @@ class SessionTitleInput(BaseModel):
     title: str = Field(min_length=1, max_length=256)
 
 
+class SessionModelConfigInput(BaseModel):
+    provider_binding_id: UUID
+    model_id: str = Field(min_length=1, max_length=256)
+    thinking_level: str | None = Field(default=None, max_length=64)
+
+
 async def owned(
     session_id: UUID, user: User, db: AsyncSession, *, lock: bool = False
 ) -> AgentSession:
@@ -75,13 +81,21 @@ async def owned(
 def render_run(run: AgentRun | None) -> dict | None:
     if run is None:
         return None
-    return {
+    value = {
         "id": str(run.id),
         "status": run.status,
         "error": run.error,
         "started_at": run.started_at,
         "finished_at": run.finished_at,
     }
+    if hasattr(run, "provider_binding_id"):
+        value.update({
+            "provider_binding_id": str(run.provider_binding_id) if run.provider_binding_id else None,
+            "provider_id": run.provider_id,
+            "model_id": run.model_id,
+            "thinking_level": run.thinking_level,
+        })
+    return value
 
 
 def render_session(
@@ -93,7 +107,11 @@ def render_session(
         "title": session.title,
         "knowledge_base_ids": sorted(knowledge_base_ids),
         "workspace_id": str(session.workspace_id),
-        "profile_id": str(session.profile_id),
+        "profile_id": str(session.profile_id) if session.profile_id else None,
+        "provider_binding_id": str(getattr(session, "provider_binding_id", None)) if getattr(session, "provider_binding_id", None) else None,
+        "model_id": getattr(session, "model_id", None),
+        "thinking_level": getattr(session, "thinking_level", None),
+        "model_configured": bool(getattr(session, "provider_binding_id", None) and getattr(session, "model_id", None)),
         "created_at": session.created_at,
         "updated_at": session.updated_at,
         "latest_run": render_run(latest_run),
@@ -138,22 +156,33 @@ async def session_details(
 async def runtime_payload(
     db: AsyncSession, session: AgentSession, user_id: UUID
 ) -> dict:
-    profile = await db.scalar(
-        select(AgentProfile).where(
-            AgentProfile.id == session.profile_id, AgentProfile.user_id == user_id
-        )
-    )
     workspace = await db.scalar(
         select(Workspace).where(
             Workspace.id == session.workspace_id, Workspace.user_id == user_id
         )
     )
-    if not profile or not workspace or workspace.status != "active":
+    if not workspace or workspace.status != "active":
         raise HTTPException(422, "invalid_session_configuration")
+    binding_id = session.provider_binding_id
+    model_id = session.model_id
+    thinking_level = session.thinking_level
+    # Sessions created through the retained Profile API have their config copied
+    # on creation. This fallback only protects a partially upgraded database.
+    if (binding_id is None or model_id is None) and session.profile_id:
+        profile = await db.scalar(select(AgentProfile).where(
+            AgentProfile.id == session.profile_id, AgentProfile.user_id == user_id
+        ))
+        if profile:
+            binding_id, model_id, thinking_level = (
+                profile.provider_binding_id, profile.model_id, profile.thinking_level
+            )
+    if binding_id is None or model_id is None:
+        raise HTTPException(409, "session_model_not_configured")
     binding = await db.scalar(
         select(ProviderBinding).where(
-            ProviderBinding.id == profile.provider_binding_id,
+            ProviderBinding.id == binding_id,
             ProviderBinding.user_id == user_id,
+            ProviderBinding.workspace_id == workspace.id,
             ProviderBinding.status == "active",
         )
     )
@@ -179,8 +208,9 @@ async def runtime_payload(
     )
     return {
         "workspace_key": workspace.storage_key,
-        "model_id": profile.model_id,
-        "thinking_level": profile.thinking_level,
+        "provider_binding_id": str(binding.id),
+        "model_id": model_id,
+        "thinking_level": thinking_level,
         "provider_id": binding.provider_id,
         "api_key": decrypt(
             binding.ciphertext,
@@ -193,6 +223,29 @@ async def runtime_payload(
             for knowledge_base_id, name in knowledge_bases
         ],
     }
+
+
+async def validate_model_config(
+    db: AsyncSession,
+    user_id: UUID,
+    workspace_id: UUID,
+    body: SessionModelConfigInput,
+) -> ProviderBinding:
+    binding = await db.scalar(select(ProviderBinding).where(
+        ProviderBinding.id == body.provider_binding_id,
+        ProviderBinding.user_id == user_id,
+        ProviderBinding.workspace_id == workspace_id,
+        ProviderBinding.status == "active",
+    ))
+    if binding is None:
+        raise HTTPException(422, "invalid_binding")
+    models = await RuntimeClient().models(str(user_id), binding.provider_id)
+    model = next((item for item in models if item["id"] == body.model_id), None)
+    if model is None:
+        raise HTTPException(422, "invalid_model")
+    if body.thinking_level and body.thinking_level not in model.get("thinking_levels", []):
+        raise HTTPException(422, "invalid_thinking_level")
+    return binding
 
 
 async def publish(run_id: UUID, name: str, data: dict) -> None:
@@ -392,13 +445,10 @@ async def consume_run(
                 raise RuntimeError("runtime_stream_ended_before_agent_settled")
             if run:
                 run.status, run.finished_at = "completed", datetime.now(UTC)
-            binding = await db.scalar(
-                select(ProviderBinding)
-                .join(
-                    AgentProfile, AgentProfile.provider_binding_id == ProviderBinding.id
-                )
-                .where(AgentProfile.id == session.profile_id)
-            )
+            binding = await db.scalar(select(ProviderBinding).where(
+                ProviderBinding.id == session.provider_binding_id,
+                ProviderBinding.user_id == user_id,
+            ))
             if binding and binding.verified_at is None:
                 binding.verified_at = datetime.now(UTC)
             await db.commit()
@@ -424,11 +474,11 @@ async def create_session(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    profile = await db.scalar(
-        select(AgentProfile).where(
+    profile = None
+    if body.profile_id is not None:
+        profile = await db.scalar(select(AgentProfile).where(
             AgentProfile.id == body.profile_id, AgentProfile.user_id == user.id
-        )
-    )
+        ))
     if body.workspace_id is None:
         workspace = await current_workspace(db, user.id)
     else:
@@ -439,7 +489,11 @@ async def create_session(
                 Workspace.status == "active",
             )
         )
-    if profile is None or workspace is None:
+    if workspace is None:
+        raise HTTPException(422, "invalid_workspace")
+    if profile is not None and profile.workspace_id != workspace.id:
+        raise HTTPException(422, "invalid_profile_or_workspace")
+    if body.profile_id is not None and profile is None:
         raise HTTPException(422, "invalid_profile_or_workspace")
     if body.knowledge_base_ids and get_settings().runtime_gateway_base_url is None:
         raise HTTPException(409, "agent_rag_unavailable")
@@ -460,7 +514,12 @@ async def create_session(
         if len(knowledge_bases) != len(body.knowledge_base_ids):
             raise HTTPException(422, "invalid_knowledge_base_binding")
     session = AgentSession(
-        user_id=user.id, profile_id=profile.id, workspace_id=workspace.id
+        user_id=user.id,
+        profile_id=profile.id if profile else None,
+        workspace_id=workspace.id,
+        provider_binding_id=profile.provider_binding_id if profile else None,
+        model_id=profile.model_id if profile else None,
+        thinking_level=profile.thinking_level if profile else None,
     )
     db.add(session)
     await db.flush()
@@ -478,6 +537,29 @@ async def create_session(
         [str(item) for item in body.knowledge_base_ids],
         None,
     )
+
+
+@router.put("/{session_id}/model-config")
+async def set_model_config(
+    session_id: UUID,
+    body: SessionModelConfigInput,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    session = await owned(session_id, user, db, lock=True)
+    running = await db.scalar(select(AgentRun.id).where(
+        AgentRun.session_id == session.id, AgentRun.status == "running"
+    ).limit(1))
+    if running is not None:
+        raise HTTPException(409, "session_busy")
+    await validate_model_config(db, user.id, session.workspace_id, body)
+    session.provider_binding_id = body.provider_binding_id
+    session.model_id = body.model_id
+    session.thinking_level = body.thinking_level
+    await db.commit()
+    await db.refresh(session)
+    knowledge_bases, latest_runs = await session_details(db, [session])
+    return render_session(session, knowledge_bases[session.id], latest_runs.get(session.id))
 
 
 @router.get("")
@@ -506,7 +588,7 @@ async def get_session(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    session = await owned(session_id, user, db)
+    session = await owned(session_id, user, db, lock=True)
     knowledge_bases, latest_runs = await session_details(db, [session])
     return render_session(
         session, knowledge_bases[session.id], latest_runs.get(session.id)
@@ -621,12 +703,23 @@ async def stream(
     if workspace is None or workspace.status != "active":
         raise HTTPException(409, "workspace_unavailable")
     await enforce_workspace_storage_limit(user.id)
+    # Real ORM Sessions always expose these fields.  Keeping the legacy test
+    # double path avoids coupling the run-uniqueness contract to Runtime I/O.
+    runtime = await runtime_payload(db, session, user.id) if hasattr(session, "provider_binding_id") else None
     sequence = await db.scalar(
         select(func.coalesce(func.max(ChatMessage.sequence), 0)).where(
             ChatMessage.session_id == session_id
         )
     )
-    run = AgentRun(session_id=session_id, user_id=user.id)
+    run_values = {"session_id": session_id, "user_id": user.id}
+    if runtime is not None:
+        run_values.update({
+            "provider_binding_id": UUID(runtime["provider_binding_id"]),
+            "provider_id": runtime["provider_id"],
+            "model_id": runtime["model_id"],
+            "thinking_level": runtime["thinking_level"],
+        })
+    run = AgentRun(**run_values)
     try:
         # PostgreSQL checks the partial unique index during flush, not only at
         # commit.  Keep both operations in this boundary so a concurrent or
@@ -642,6 +735,10 @@ async def stream(
                 content=body.content,
             )
         )
+        if session.title is None:
+            generated_title = " ".join(body.content.split())[:10]
+            if generated_title:
+                session.title = generated_title
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()

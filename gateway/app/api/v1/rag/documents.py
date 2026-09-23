@@ -212,6 +212,32 @@ async def delete_document(
     await db.commit()
 
 
+@router.post(
+    "/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/documents:delete"
+)
+async def delete_documents_batch(
+    workspace_id: UUID,
+    knowledge_base_id: UUID,
+    body: JobSubmit,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete selected rows independently so one busy document is not a batch blocker."""
+    items: list[dict] = []
+    for document_id in body.document_ids:
+        try:
+            await delete_document(workspace_id, knowledge_base_id, document_id, user, db)
+            items.append({"document_id": str(document_id), "status": "deleted"})
+        except HTTPException as exc:
+            await db.rollback()
+            items.append({"document_id": str(document_id), "status": "failed", "error_code": str(exc.detail)})
+    return {
+        "deleted": sum(item["status"] == "deleted" for item in items),
+        "failed": sum(item["status"] == "failed" for item in items),
+        "items": items,
+    }
+
+
 async def delete_vectors_for_document(
     db: AsyncSession, kb: KnowledgeBase, document: RagDocument
 ) -> None:

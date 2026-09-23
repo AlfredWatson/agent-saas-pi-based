@@ -3,9 +3,9 @@ import { Readable } from "node:stream";
 import { config } from "./config.js";
 import { tenantFrom } from "./auth/internal-auth.js";
 import { SessionRegistry } from "./sessions/session-registry.js";
-import { createSession, deleteSessionData, deleteWorkspaceData, ensureRuntimeHome, InvalidSessionFileKeyError, type SessionInput, type WorkspaceSessionFile } from "./sessions/session-factory.js";
+import { configureManagedSession, createSession, deleteSessionData, deleteWorkspaceData, ensureRuntimeHome, InvalidSessionFileKeyError, type SessionInput, type WorkspaceSessionFile } from "./sessions/session-factory.js";
 import { projectMessageEnd, type CompletedTool } from "./sessions/event-projection.js";
-import { fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { fauxProvider, getSupportedThinkingLevels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import {
 	deleteWorkspaceFile,
 	InvalidWorkspaceFilePathError,
@@ -61,7 +61,7 @@ app.get<{ Querystring: { provider_id?: string }; }>("/internal/v1/models", async
 	const runtime = await (await import("@earendil-works/pi-coding-agent")).ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null });
 	const providerId = request.query.provider_id;
 	if (providerId === "faux") runtime.registerNativeProvider(fauxProvider({ provider: "faux", models: [{ id: "faux-1", name: "Faux 1", reasoning: true }] }).provider);
-	return { models: runtime.getModels(providerId).map((model) => ({ id: model.id, provider_id: model.provider, name: model.name, thinking_levels: model.reasoning ? ["minimal", "low", "medium", "high"] : [] })) };
+	return { models: runtime.getModels(providerId).map((model) => ({ id: model.id, provider_id: model.provider, name: model.name, thinking_levels: model.reasoning ? getSupportedThinkingLevels(model) : [] })) };
 });
 app.put<{ Params: { id: string }; Body: SessionInput }>("/internal/v1/sessions/:id", async (request, reply) => {
 	const tenant = authenticated(request, reply); if (!tenant) return;
@@ -76,6 +76,13 @@ app.put<{ Params: { id: string }; Body: SessionInput }>("/internal/v1/sessions/:
 		registry.set(request.params.id, managed);
 	}
 	if (managed.tenant !== tenant) return reply.code(403).send({ error: "tenant_mismatch" });
+	try {
+		await configureManagedSession(managed, request.body);
+	} catch (error) {
+		if (error instanceof Error && error.message === "session_busy") return reply.code(409).send({ error: "session_busy" });
+		if (error instanceof Error && error.message === "invalid_model") return reply.code(422).send({ error: "invalid_model" });
+		throw error;
+	}
 	return { pi_session_id: managed.session.sessionId, session_file_key: managed.sessionFile };
 });
 app.delete<{ Params: { workspaceKey: string }; Body: { sessions?: WorkspaceSessionFile[] } }>("/internal/v1/workspaces/:workspaceKey", async (request, reply) => {

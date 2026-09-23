@@ -2,13 +2,16 @@ export type User = { id: string; email: string; status: string };
 export type AuthToken = { access_token: string; token_type: string };
 export type Workspace = { id: string; name: string; status: string; is_current: boolean };
 export type Provider = { id: string; name: string };
-export type ProviderBinding = { id: string; provider_id: string; display_name: string; status: string };
+export type ProviderBinding = { id: string; workspace_id: string; provider_id: string; display_name: string; status: string };
 export type ProviderModel = { id: string; provider_id: string; name: string; thinking_levels: string[] };
+export type AvailableModel = ProviderModel & { provider_binding_id: string; binding_name: string };
 export type AgentProfile = { id: string; name: string; model_id: string; thinking_level: string | null };
 export type LatestRun = { id: string; status: "running" | "completed" | "failed" | string; error: string | null; started_at: string; finished_at: string | null };
 export type AgentSession = {
   id: string; status: string; title: string | null; knowledge_base_ids: string[];
-  workspace_id: string; profile_id: string; created_at: string; updated_at: string; latest_run: LatestRun | null;
+  workspace_id: string; profile_id: string | null; provider_binding_id: string | null;
+  model_id: string | null; thinking_level: string | null; model_configured: boolean;
+  created_at: string; updated_at: string; latest_run: LatestRun | null;
 };
 export type ChatMessage = {
   id: string; run_id: string | null; role: "user" | "assistant" | "tool_call" | "tool_result";

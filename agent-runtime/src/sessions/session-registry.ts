@@ -1,7 +1,17 @@
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { PayloadRedactor } from "./event-projection.js";
 
-export type ManagedSession = { tenant: string; session: AgentSession; busy: boolean; sessionFile: string; redactor: PayloadRedactor };
+export type ManagedSession = {
+	tenant: string;
+	session: AgentSession;
+	modelRuntime: ModelRuntime;
+	providerId: string;
+	modelId: string;
+	thinkingLevel?: string;
+	busy: boolean;
+	sessionFile: string;
+	redactor: PayloadRedactor;
+};
 
 export class SessionRegistry {
 	private readonly entries = new Map<string, ManagedSession>();

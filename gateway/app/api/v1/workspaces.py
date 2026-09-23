@@ -1,5 +1,6 @@
 import asyncio
-import re
+import unicodedata
+from uuid import uuid4
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
@@ -14,7 +15,7 @@ from ...clients.agent_runtime import (
     RuntimeWorkspaceFileError,
 )
 from ...core.config import get_settings
-from ...db.models import AgentRun, AgentSession, ChatMessage, User, Workspace
+from ...db.models import AgentProfile, AgentRun, AgentSession, ChatMessage, ProviderBinding, User, Workspace
 from ...db.session import get_db
 from ...services.runtime_locator import RuntimeUnavailableError
 from ...services.workspace_storage import workspace_usage_bytes
@@ -23,11 +24,18 @@ from ...services.rag.lifecycle import delete_workspace_rag_data
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
 DEFAULT_WORKSPACE_KEY = "default"
-WORKSPACE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 class WorkspaceInput(BaseModel):
     name: str
+
+
+def normalized_workspace_name(value: str) -> str:
+    """A display name is never used as a filesystem identifier."""
+    name = unicodedata.normalize("NFKC", value).strip()
+    if not name or len(name) > 128 or any(unicodedata.category(char).startswith("C") for char in name):
+        raise HTTPException(422, "invalid_workspace_name")
+    return name
 
 
 def render(workspace: Workspace) -> dict:
@@ -98,8 +106,7 @@ async def create_workspace(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if not WORKSPACE_NAME.fullmatch(body.name):
-        raise HTTPException(422, "invalid_workspace_name")
+    name = normalized_workspace_name(body.name)
     await enforce_workspace_storage_limit(user.id)
     await db.scalar(select(User).where(User.id == user.id).with_for_update())
     settings = get_settings()
@@ -113,11 +120,17 @@ async def create_workspace(
         raise HTTPException(409, "workspace_limit_reached")
     if await db.scalar(
         select(Workspace.id).where(
-            Workspace.user_id == user.id, Workspace.name == body.name
+            Workspace.user_id == user.id, Workspace.name == name
         )
     ):
         raise HTTPException(409, "workspace_exists")
-    workspace = Workspace(user_id=user.id, name=body.name, storage_key=body.name)
+    workspace = Workspace(
+        user_id=user.id,
+        name=name,
+        # Keep the Runtime path independent from a human-readable (and Unicode)
+        # display name.  The prefix also makes project-owned directories clear.
+        storage_key=f"ws-{uuid4().hex}",
+    )
     db.add(workspace)
     await db.commit()
     return render(workspace)
@@ -307,6 +320,10 @@ async def delete_workspace(
         )
         await db.execute(delete(AgentRun).where(AgentRun.session_id.in_(session_ids)))
         await db.execute(delete(AgentSession).where(AgentSession.id.in_(session_ids)))
+    # Bindings are Workspace-owned.  Delete legacy Profiles first because they
+    # retain a Binding foreign key even though the workbench no longer uses one.
+    await db.execute(delete(AgentProfile).where(AgentProfile.workspace_id == workspace.id))
+    await db.execute(delete(ProviderBinding).where(ProviderBinding.workspace_id == workspace.id))
     await delete_workspace_rag_data(db, workspace.id, user.id)
     if workspace.is_current:
         default = await db.scalar(

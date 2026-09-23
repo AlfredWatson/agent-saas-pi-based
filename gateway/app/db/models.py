@@ -40,9 +40,15 @@ class Workspace(Timestamped, Base):
 
 class ProviderBinding(Timestamped, Base):
     __tablename__ = "provider_bindings"
-    __table_args__ = (UniqueConstraint("user_id", "provider_id", "display_name"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "provider_id", "display_name",
+            name="uq_provider_bindings_workspace_provider_name",
+        ),
+    )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     provider_id: Mapped[str] = mapped_column(String(128))
     display_name: Mapped[str] = mapped_column(String(128))
     ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
@@ -56,6 +62,7 @@ class AgentProfile(Timestamped, Base):
     __tablename__ = "agent_profiles"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     name: Mapped[str] = mapped_column(String(128))
     provider_binding_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("provider_bindings.id"))
     model_id: Mapped[str] = mapped_column(String(256))
@@ -66,8 +73,13 @@ class AgentSession(Timestamped, Base):
     __tablename__ = "agent_sessions"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
-    profile_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agent_profiles.id"))
+    # Profiles are retained only as a legacy creation shortcut.  A Session owns
+    # its current model configuration so it can change between completed runs.
+    profile_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("agent_profiles.id"), nullable=True)
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"))
+    provider_binding_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("provider_bindings.id"), nullable=True)
+    model_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    thinking_level: Mapped[str | None] = mapped_column(String(64), nullable=True)
     pi_session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     pi_session_file_key: Mapped[str | None] = mapped_column(String(256), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="ready")
@@ -114,6 +126,10 @@ class AgentRun(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
     status: Mapped[str] = mapped_column(String(32), default="running")
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    provider_binding_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("provider_bindings.id"), nullable=True)
+    provider_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    model_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    thinking_level: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

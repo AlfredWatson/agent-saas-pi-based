@@ -1,6 +1,6 @@
 import { ApiError } from "./errors";
 import type {
-  AgentProfile, AgentSession, AuthToken, ChatMessage, GraphArtifact, GraphDetail,
+  AgentProfile, AgentSession, AuthToken, AvailableModel, ChatMessage, GraphArtifact, GraphDetail,
   KnowledgeBase, ProcessingJob, Provider, ProviderBinding, ProviderModel,
   RagCapabilities, RagDocument, RagModel, RetrievalResult, RuntimeState, User, Workspace,
 } from "./types";
@@ -52,6 +52,10 @@ export const api = {
   },
   deleteWorkspaceFile: (id: string, path: string) => request<void>(`/workspaces/${id}/files?path=${encodeURIComponent(path)}`, { method: "DELETE" }),
   providers: () => request<{ providers: Provider[] }>("/providers"),
+  workspaceBindings: (workspaceId: string) => request<{ items: ProviderBinding[] }>(`/workspaces/${workspaceId}/provider-bindings`),
+  createWorkspaceBinding: (workspaceId: string, body: { provider_id: string; display_name: string; api_key: string }) => request<ProviderBinding>(`/workspaces/${workspaceId}/provider-bindings`, json(body)),
+  deleteWorkspaceBinding: (workspaceId: string, id: string) => request<void>(`/workspaces/${workspaceId}/provider-bindings/${id}`, { method: "DELETE" }),
+  availableModels: (workspaceId: string) => request<{ items: AvailableModel[] }>(`/workspaces/${workspaceId}/available-models`),
   bindings: () => request<{ items: ProviderBinding[] }>("/provider-bindings"),
   createBinding: (body: { provider_id: string; display_name: string; api_key: string }) => request<ProviderBinding>("/provider-bindings", json(body)),
   deleteBinding: (id: string) => request<void>(`/provider-bindings/${id}`, { method: "DELETE" }),
@@ -65,7 +69,8 @@ export const api = {
   recreateRuntime: () => request<RuntimeState>("/runtime:recreate", { method: "POST" }),
   sessions: () => request<{ items: AgentSession[] }>("/sessions"),
   session: (id: string) => request<AgentSession>(`/sessions/${id}`),
-  createSession: (body: { profile_id: string; workspace_id: string; knowledge_base_ids: string[] }) => request<AgentSession>("/sessions", json(body)),
+  createSession: (body: { profile_id?: string; workspace_id: string; knowledge_base_ids: string[] }) => request<AgentSession>("/sessions", json(body)),
+  setSessionModelConfig: (id: string, body: { provider_binding_id: string; model_id: string; thinking_level: string | null }) => request<AgentSession>(`/sessions/${id}/model-config`, putJson(body)),
   updateSessionTitle: (id: string, title: string) => request<AgentSession>(`/sessions/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
   deleteSession: (id: string) => request<void>(`/sessions/${id}`, { method: "DELETE" }),
   messages: (id: string) => request<{ items: ChatMessage[] }>(`/sessions/${id}/messages`),
@@ -83,10 +88,12 @@ export const api = {
   },
   updateChunking: (workspaceId: string, kbId: string, documentId: string, strategy: string, config: Record<string, unknown>) => request(`/${["workspaces", workspaceId, "knowledge-bases", kbId, "documents", documentId, "chunking-config"].join("/")}`, putJson({ strategy, config })),
   deleteDerivedDocumentData: (workspaceId: string, kbId: string, documentId: string, kind: "blocks" | "chunks" | "vectors" | "graph") => request<void>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/documents/${documentId}/${kind}`, { method: "DELETE" }),
+  deleteDocuments: (workspaceId: string, kbId: string, documentIds: string[]) => request<{ items: Array<{ document_id: string; status: string; error_code?: string }> }>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/documents:delete`, json({ document_ids: documentIds })),
   submitStage: (workspaceId: string, kbId: string, kind: "parsing" | "chunking" | "vectorization" | "graph-extraction", documentIds: string[]) => {
     const body = kind === "parsing" ? { items: documentIds.map((document_id) => ({ document_id })) } : { document_ids: documentIds };
     return request<ProcessingJob>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/jobs/${kind}`, json(body));
   },
+  submitStageBatch: (workspaceId: string, kbId: string, kind: "parsing" | "chunking" | "vectorization" | "graph-extraction", documentIds: string[]) => request<{ items: Array<{ document_id: string; status: string; error_code?: string }> }>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/jobs/${kind}:batch`, json({ document_ids: documentIds })),
   jobs: (workspaceId: string, kbId: string) => request<{ items: ProcessingJob[] }>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/jobs`),
   ragModels: (workspaceId: string, kbId: string) => request<{ items: RagModel[] }>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/models`),
   setRagModel: (workspaceId: string, kbId: string, kind: "embedding" | "llm" | "reranker", body: Record<string, string | null>) => request<RagModel>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/${kind}-model`, putJson(body)),

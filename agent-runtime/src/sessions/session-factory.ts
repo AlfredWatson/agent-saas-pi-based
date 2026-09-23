@@ -56,6 +56,26 @@ export async function deleteSessionData(sessionFileKey: string): Promise<void> {
 	await rm(sessionFilePath(sessionFileKey, sessions), { force: true });
 }
 
+/** Align an idle Pi session with the Gateway-owned configuration. */
+export async function configureManagedSession(managed: ManagedSession, input: SessionInput): Promise<void> {
+	if (managed.busy) throw new Error("session_busy");
+	if (input.provider_id !== "faux") await managed.modelRuntime.setRuntimeApiKey(input.provider_id, input.api_key);
+	const model = managed.modelRuntime.getModel(input.provider_id, input.model_id);
+	if (!model) throw new Error("invalid_model");
+	if (managed.providerId !== input.provider_id || managed.modelId !== input.model_id) {
+		await managed.session.setModel(model);
+		managed.providerId = input.provider_id;
+		managed.modelId = input.model_id;
+	}
+	if (input.thinking_level !== undefined && input.thinking_level !== managed.thinkingLevel) {
+		managed.session.setThinkingLevel(input.thinking_level as never);
+		managed.thinkingLevel = input.thinking_level;
+	}
+	// The Gateway only streams current-run events; always keep the active key in
+	// the Runtime-side recursive redactor as a second safety boundary.
+	managed.redactor = createPayloadRedactor([config.sharedSecret, config.ragSharedSecret, input.api_key]);
+}
+
 /** Runtime credentials deliberately live only in this ModelRuntime instance. */
 export async function createSession(tenant: string, sessionId: string, input: SessionInput): Promise<ManagedSession> {
 	const workspace = workspacePath(input.workspace_key);
@@ -94,5 +114,15 @@ export async function createSession(tenant: string, sessionId: string, input: Se
 	});
 	const sessionFile = session.sessionFile ? basename(session.sessionFile) : undefined;
 	if (!sessionFile || !SAFE_SESSION_FILE_KEY.test(sessionFile)) throw new Error("session_file_missing");
-	return { tenant, session, busy: false, sessionFile, redactor: createPayloadRedactor([config.sharedSecret, config.ragSharedSecret, input.api_key]) };
+	return {
+		tenant,
+		session,
+		modelRuntime,
+		providerId: input.provider_id,
+		modelId: input.model_id,
+		thinkingLevel: input.thinking_level,
+		busy: false,
+		sessionFile,
+		redactor: createPayloadRedactor([config.sharedSecret, config.ragSharedSecret, input.api_key]),
+	};
 }

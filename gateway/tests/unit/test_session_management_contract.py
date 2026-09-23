@@ -65,6 +65,27 @@ def test_rendered_session_keeps_legacy_fields_and_exposes_ui_metadata():
     }
 
 
+def test_rendered_session_exposes_workspace_model_configuration_and_run_snapshot():
+    binding_id = uuid4()
+    rendered = sessions.render_session(
+        SimpleNamespace(
+            id=uuid4(), status="ready", title=None, workspace_id=uuid4(), profile_id=None,
+            provider_binding_id=binding_id, model_id="faux-1", thinking_level="low",
+            created_at="created", updated_at="updated",
+        ),
+        [],
+        SimpleNamespace(
+            id=uuid4(), status="completed", error=None, started_at="started", finished_at="finished",
+            provider_binding_id=binding_id, provider_id="faux", model_id="faux-1", thinking_level="low",
+        ),
+    )
+    assert rendered["profile_id"] is None
+    assert rendered["provider_binding_id"] == str(binding_id)
+    assert rendered["model_configured"] is True
+    assert rendered["latest_run"]["provider_id"] == "faux"
+    assert rendered["latest_run"]["thinking_level"] == "low"
+
+
 def test_idle_session_delete_removes_projection_rows_without_runtime(monkeypatch):
     session = SimpleNamespace(id=uuid4(), pi_session_file_key=None)
 
