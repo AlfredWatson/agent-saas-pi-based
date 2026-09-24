@@ -17,6 +17,7 @@ const messages: Record<string, string> = {
   invalid_token: "登录已过期，请重新登录。",
   email_exists: "该邮箱已注册。",
   runtime_unavailable: "Agent Runtime 当前不可用，请检查运行环境。",
+  runtime_update_required: "Agent Runtime 版本过旧，请在 Runtime 面板点击“重建”后重试。",
   session_busy: "该会话正在执行任务，请先终止或等待完成。",
   session_delete_incomplete: "会话文件暂时无法清理，数据库内容尚未删除，可稍后重试。",
   invalid_session_title: "会话标题不能为空。",
@@ -36,6 +37,13 @@ const messages: Record<string, string> = {
   file_too_large: "文件超过当前工作区的单文件限制。",
   invalid_binding_name: "请填写 Provider Binding 的显示名。",
   provider_binding_in_use: "仍有会话正在使用该 Provider Binding，请先切换这些会话的模型。",
+  invalid_model_base_url: "服务地址无效；请填写 Runtime 容器可访问的私有网络地址。",
+  invalid_model_catalog: "模型服务返回的目录无效，请检查服务的 OpenAI 兼容接口。",
+  model_service_auth_failed: "模型服务鉴权失败，请检查 API Key。",
+  model_service_unavailable: "Runtime 无法连接模型服务；请检查服务是否监听容器可达地址及运行状态。",
+  invalid_model_config: "模型参数无效；最大输出 token 必须小于上下文窗口。",
+  invalid_model: "模型未出现在该 Binding 的目录中，请刷新模型。",
+  model_unavailable: "该模型已从服务目录下线，请刷新模型并选择其他模型。",
 };
 
 export function readableError(error: unknown): string {

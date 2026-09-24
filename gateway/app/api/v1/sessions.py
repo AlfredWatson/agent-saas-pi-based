@@ -188,6 +188,20 @@ async def runtime_payload(
     )
     if not binding:
         raise HTTPException(422, "invalid_binding")
+    local_model_payload = None
+    if binding.provider_id in {"vllm", "sglang"}:
+        from ...db.models import ProviderBindingModel
+        local_model = await db.scalar(select(ProviderBindingModel).where(
+            ProviderBindingModel.binding_id == binding.id,
+            ProviderBindingModel.model_id == model_id,
+        ))
+        if local_model is None or local_model.status != "ready":
+            raise HTTPException(409, "model_unavailable")
+        local_model_payload = {
+            "id": local_model.model_id, "name": local_model.name,
+            "context_window": local_model.context_window,
+            "max_tokens": local_model.max_tokens, "reasoning": local_model.reasoning,
+        }
     knowledge_bases = list(
         (
             await db.execute(
@@ -212,6 +226,8 @@ async def runtime_payload(
         "model_id": model_id,
         "thinking_level": thinking_level,
         "provider_id": binding.provider_id,
+        "base_url": binding.base_url,
+        "local_model": local_model_payload,
         "api_key": decrypt(
             binding.ciphertext,
             binding.nonce,
@@ -242,9 +258,21 @@ async def validate_model_config(
     ).with_for_update())
     if binding is None:
         raise HTTPException(422, "invalid_binding")
-    models = await RuntimeClient().models(str(user_id), binding.provider_id)
+    if binding.provider_id in {"vllm", "sglang"}:
+        from .providers import binding_models_for
+        models = await binding_models_for(db, binding, user_id, ready_only=True)
+    else:
+        models = await RuntimeClient().models(str(user_id), binding.provider_id)
     model = next((item for item in models if item["id"] == body.model_id), None)
     if model is None:
+        if binding.provider_id in {"vllm", "sglang"}:
+            from ...db.models import ProviderBindingModel
+            stored = await db.scalar(select(ProviderBindingModel).where(
+                ProviderBindingModel.binding_id == binding.id,
+                ProviderBindingModel.model_id == body.model_id,
+            ))
+            if stored is not None and stored.status == "unavailable":
+                raise HTTPException(409, "model_unavailable")
         raise HTTPException(422, "invalid_model")
     if body.thinking_level and body.thinking_level not in model.get("thinking_levels", []):
         raise HTTPException(422, "invalid_thinking_level")

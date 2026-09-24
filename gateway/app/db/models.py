@@ -51,11 +51,25 @@ class ProviderBinding(Timestamped, Base):
     workspace_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     provider_id: Mapped[str] = mapped_column(String(128))
     display_name: Mapped[str] = mapped_column(String(128))
+    base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
     nonce: Mapped[bytes] = mapped_column(LargeBinary(12))
     key_version: Mapped[int] = mapped_column(default=1)
     status: Mapped[str] = mapped_column(String(32), default="active")
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ProviderBindingModel(Timestamped, Base):
+    __tablename__ = "provider_binding_models"
+    binding_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("provider_bindings.id", ondelete="CASCADE"), primary_key=True
+    )
+    model_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    name: Mapped[str] = mapped_column(String(256))
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    context_window: Mapped[int | None] = mapped_column(nullable=True)
+    max_tokens: Mapped[int | None] = mapped_column(nullable=True)
+    reasoning: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
 
 class AgentProfile(Timestamped, Base):

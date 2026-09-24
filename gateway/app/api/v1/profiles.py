@@ -45,7 +45,11 @@ async def validate_input(body: ProfileInput, user: User, db: AsyncSession) -> Pr
     ))
     if binding is None:
         raise HTTPException(422, "invalid_binding")
-    models = await RuntimeClient().models(str(user.id), binding.provider_id)
+    if binding.provider_id in {"vllm", "sglang"}:
+        from .providers import binding_models_for
+        models = await binding_models_for(db, binding, user.id, ready_only=True)
+    else:
+        models = await RuntimeClient().models(str(user.id), binding.provider_id)
     selected = next((item for item in models if item["id"] == body.model_id), None)
     if selected is None:
         raise HTTPException(422, "invalid_model")

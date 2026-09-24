@@ -7,6 +7,13 @@ from ..core.config import get_settings
 from ..services.runtime_locator import RuntimeUnavailableError, get_runtime_locator
 
 
+class LocalModelServiceError(Exception):
+    def __init__(self, status_code: int, detail: str):
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(detail)
+
+
 class RuntimeClient:
     def __init__(self) -> None:
         settings = get_settings()
@@ -45,6 +52,34 @@ class RuntimeClient:
             )
             response.raise_for_status()
             return None
+
+    async def discover_local_models(
+        self, user_id: str, base_url: str, api_key: str
+    ) -> dict:
+        runtime_url = await self._base_url(user_id)
+        try:
+            async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
+                response = await client.post(
+                    f"{runtime_url}/internal/v1/local-models/discover",
+                    headers=self._headers(user_id),
+                    json={"base_url": base_url, "api_key": api_key},
+                )
+        except httpx.RequestError as exc:
+            raise LocalModelServiceError(503, "model_service_unavailable") from exc
+        if not response.is_success:
+            if response.status_code == 404:
+                raise LocalModelServiceError(503, "runtime_update_required")
+            try:
+                error = response.json().get("error")
+            except ValueError:
+                error = None
+            if error not in {
+                "invalid_model_base_url", "model_service_unavailable",
+                "model_service_auth_failed", "invalid_model_catalog",
+            }:
+                error = "model_service_unavailable"
+            raise LocalModelServiceError(503 if error == "model_service_unavailable" else 422, error)
+        return response.json()
 
     async def models(self, user_id: str, provider_id: str) -> list[dict]:
         base_url = await self._base_url(user_id)

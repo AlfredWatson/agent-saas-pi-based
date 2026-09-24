@@ -7,6 +7,7 @@ import { configureManagedSession, createSession, deleteSessionData, deleteWorksp
 import { projectMessageEnd, type CompletedTool } from "./sessions/event-projection.js";
 import { projectCompactionEvent } from "./sessions/compaction-event.js";
 import { fauxProvider, getSupportedThinkingLevels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { discoverLocalModels, LocalModelError } from "./local-models.js";
 import {
 	deleteWorkspaceFile,
 	downloadWorkspaceFile,
@@ -58,6 +59,14 @@ app.post<{ Body: { provider_id: string; api_key: string } }>("/internal/v1/provi
 	// Binding is storage-only. It must not make a provider/model request.
 	return { accepted: true };
 });
+app.post<{ Body: { base_url: string; api_key: string } }>("/internal/v1/local-models/discover", async (request, reply) => {
+	if (!authenticated(request, reply)) return;
+	try { return await discoverLocalModels(request.body.base_url, request.body.api_key); }
+	catch (error) {
+		if (error instanceof LocalModelError) return reply.code(error.message === "model_service_unavailable" ? 503 : 422).send({ error: error.message });
+		throw error;
+	}
+});
 app.get<{ Querystring: { provider_id?: string }; }>("/internal/v1/models", async (request, reply) => {
 	if (!authenticated(request, reply)) return;
 	const runtime = await (await import("@earendil-works/pi-coding-agent")).ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null });
@@ -73,6 +82,8 @@ app.put<{ Params: { id: string }; Body: SessionInput }>("/internal/v1/sessions/:
 			managed = await createSession(tenant, request.params.id, request.body);
 		} catch (error) {
 			if (error instanceof InvalidSessionFileKeyError) return reply.code(422).send({ error: "invalid_session_file_key" });
+			if (error instanceof LocalModelError) return reply.code(422).send({ error: error.message });
+			if (error instanceof Error && error.message === "invalid_model") return reply.code(422).send({ error: "invalid_model" });
 			throw error;
 		}
 		registry.set(request.params.id, managed);
@@ -81,6 +92,7 @@ app.put<{ Params: { id: string }; Body: SessionInput }>("/internal/v1/sessions/:
 	try {
 		await configureManagedSession(managed, request.body);
 	} catch (error) {
+		if (error instanceof LocalModelError) return reply.code(422).send({ error: error.message });
 		if (error instanceof Error && error.message === "session_busy") return reply.code(409).send({ error: "session_busy" });
 		if (error instanceof Error && error.message === "invalid_model") return reply.code(422).send({ error: "invalid_model" });
 		throw error;

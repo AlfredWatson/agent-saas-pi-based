@@ -121,6 +121,16 @@ Gateway 默认使用 `.env` 的 `GATEWAY_HOST` 和 `GATEWAY_PORT`；可用
 
 `display_name` 去除首尾空白后必须为 1–128 字符，否则返回 `422 invalid_binding_name`。这一步只验证 Provider 目录和非空密钥，**不**访问上游 Provider。当前 Gateway 对 Runtime 的 HTTP 校验异常没有统一的公开错误转换；调用方不应把 Provider 校验失败的具体 HTTP 状态当作稳定契约。
 
+本地 Agent 模型可将 `provider_id` 设为 `vllm` 或 `sglang`，通过显式 Workspace 路径创建 Binding。此时 `base_url` 必填，`api_key` 可为空；创建时 Runtime 实际请求服务的 `GET /v1/models`，发现失败不会保存 Binding。内置 Provider 仍需非空 API Key，且不接受 `base_url`。服务根地址和以 `/v1` 结尾的地址均可填写，返回的 `base_url` 统一以 `/v1` 结尾。前端工作台的 Provider Bindings 面板支持创建、逐模型配置和显式刷新，也可直接使用以下公开 API。
+
+`GET /providers` 继续返回 Pi 内置目录；前端将本地 `vllm`、`sglang` 作为独立选项展示。
+
+```json
+{"provider_id":"vllm","display_name":"本地推理","base_url":"http://10.20.1.5:8000","api_key":""}
+```
+
+地址必须由 Runtime 容器访问，且仅允许解析到 RFC 1918 私有 IPv4 或 IPv6 ULA 地址的 HTTP/HTTPS 服务；回环、链路本地、元数据和公网地址、URL 内嵌凭据、查询参数、片段及重定向均被拒绝。宿主机服务可使用容器可达的私有地址或 `host.docker.internal`；服务若仅监听宿主机 `127.0.0.1`，Runtime 容器无法使用该地址。允许任意私有网段意味着调用方能请求 Runtime 可达的内网服务，部署时应以容器网络隔离限制可达范围。
+
 ### `GET /provider-bindings`
 
 ```json
@@ -160,6 +170,24 @@ Binding 必须属于当前用户且是 `active`：
 | `GET /workspaces/{workspace_id}/provider-bindings/{binding_id}/models` | 读取该 active Binding 的模型目录。 |
 | `DELETE /workspaces/{workspace_id}/provider-bindings/{binding_id}` | 软禁用；引用中的 Binding 返回 `409 provider_binding_in_use`。 |
 | `GET /workspaces/{workspace_id}/available-models` | 聚合该 Workspace 所有 active Binding 的模型，按 Binding 名称和 ID 排序。 |
+
+### 配置本地 Agent 模型
+
+本地 Binding 创建后，`GET /workspaces/{workspace_id}/provider-bindings/{binding_id}/models` 返回发现的模型及 `status`、`context_window`、`max_tokens`、`reasoning`。新模型为 `pending`，必须逐个配置才能进入 `available-models`：
+
+`PUT /workspaces/{workspace_id}/provider-bindings/{binding_id}/models:configure`
+
+```json
+{"model_id":"Qwen3-8B","context_window":32768,"max_tokens":4096,"reasoning":true}
+```
+
+`context_window` 和 `max_tokens` 必须为正整数，且 `max_tokens < context_window`。成功返回带 `status:"ready"` 的模型。当前仅按文本模型接入，费用为零；`reasoning` 只识别思考输出，不提供思考强度设置，因此本地模型的 `thinking_levels` 为 `[]`，Session/Profile 的 `thinking_level` 应省略或为 `null`。未知模型返回 `422 invalid_model`；参数不合法返回 `422 invalid_model_config`；已从服务目录消失的模型返回 `409 model_unavailable`。
+
+`POST /workspaces/{workspace_id}/provider-bindings/{binding_id}/models:refresh` 会重新请求 `/v1/models`，成功后原子更新目录：新模型为 `pending`，已配置且仍存在的模型保留参数并为 `ready`，消失的模型标记为 `unavailable`。刷新失败时保留旧目录。`GET .../models` 可查看包括不可用模型在内的目录；`available-models` 仅含 `ready` 模型。引用不可用模型的 Session 保留配置，但下次运行前返回 `409 model_unavailable`。
+
+调用顺序：创建本地 Binding → `GET .../models` → 逐个 `PUT .../models:configure` → `GET .../available-models` → 创建 Profile 或 `PUT /sessions/{session_id}/model-config` → Chat；模型服务目录变化时调用 `POST .../models:refresh`。模型发现的地址或目录错误返回 `422 invalid_model_base_url`、`422 invalid_model_catalog`，鉴权错误返回 `422 model_service_auth_failed`，连接或上游服务错误返回 `503 model_service_unavailable`；旧 Runtime 缺少发现路由时返回 `503 runtime_update_required`，需在工作台 Runtime 面板重建。Binding 密钥不会通过读取接口返回；空密钥聊天请求可能携带 Runtime 内存中的占位 Bearer 头。
+
+分别运行 `gateway/.venv/bin/python test/local_agent_provider_flow.py --provider vllm|sglang --base-url <Runtime可达地址> --model-id <模型ID> --context-window <整数> --max-tokens <整数>` 做公开 HTTP 验收。已有测试账号的 Runtime 如仍运行旧代码，可加 `--recreate-runtime`；该选项会重启此账号空闲的 Runtime。工具调用要求模型服务已启用匹配的聊天模板与工具解析器；脚本会验证聊天、工具调用、历史记录和目录刷新。
 
 `available-models` 返回 `{"items":[{"provider_binding_id":"<uuid>","binding_name":"开发测试","id":"faux-1","provider_id":"faux","name":"Faux 1","thinking_levels":["high"]}]}`。跨 Workspace 的 Binding 在显式路径下返回 `404 binding_not_found`；未拥有的 Workspace 返回 `404 workspace_not_found`。无 Workspace 前缀的兼容路径中，列表和创建操作作用于当前 Workspace；按 Binding ID 读取模型及删除操作按当前用户拥有的 Binding 定位。
 
