@@ -20,7 +20,7 @@ async def copy_knowledge_base(
         select(ProcessingJob.id)
         .where(
             ProcessingJob.knowledge_base_id == source.id,
-            ProcessingJob.status == "running",
+            ProcessingJob.status.in_(("queued", "running")),
         )
         .limit(1)
     ):

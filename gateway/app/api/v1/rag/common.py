@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +37,7 @@ from app.domain.rag.schemas import (
     GraphMergeInput,
     JobSubmit,
     ChunkingConfigInput,
+    DerivedTextUpdate,
     KnowledgeBaseCopy,
     KnowledgeBaseCreate,
     KnowledgeBaseUpdate,

@@ -572,7 +572,9 @@ Workspace 名称重复返回 `409 knowledge_base_exists`。
 ```
 
 副本继承文档、blocks、chunks、向量、图谱、任务记录、配置和仍有效的中间缓存，且不能选择
-不同后端。源知识库有 running 文档任务时返回 `409 knowledge_base_processing`。
+不同后端。副本完成后是可编辑的普通知识库。源知识库有 queued 或 running 文档任务时返回
+`409 knowledge_base_processing`。提交后轮询 `GET /api/v1/rag/operations/{operation_id}`，
+直到 `succeeded` 或 `failed`；仅在成功后使用 `target_knowledge_base_id` 打开副本。
 
 ### `DELETE /workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}`
 
@@ -689,6 +691,22 @@ curl -X POST "$BASE/workspaces/$WORKSPACE_ID/knowledge-bases/$KB_ID/documents" \
 ### `GET .../{knowledge_base_id}/documents/{document_id}`
 
 返回一个文档对象。
+
+### `GET .../{knowledge_base_id}/documents/{document_id}/blocks` / `chunks`
+
+按 `ordinal`、`id` 稳定排序，使用 `limit`（默认 50，范围 1–100）和 `offset`（默认 0）分页。
+返回 `{"items":[...],"total":1,"limit":50,"offset":0}`。block 条目包含 `id`、`ordinal`
+（从 0 开始）、`text`、`metadata`、`content_hash`；chunk 条目还包含 `block_id`、
+`token_count` 和 `strategy_snapshot`。只能读取当前工作区知识库所属文档。
+
+### `PATCH .../{knowledge_base_id}/documents/{document_id}/blocks/{block_id}` / `chunks/{chunk_id}`
+
+请求体为 `{"text":"修改后的正文"}`，返回更新后的条目。仅支持修改已有条目正文；空白正文
+返回 `422 empty_derived_text`。文档处理任务 queued/running 时返回 `409 document_processing`；
+向量化或图谱提取阶段已提交过任务时返回 `409 derived_data_edit_locked`。这包括失败的任务：
+需先通过对应的 vectors/graph 删除接口重置阶段，再修改条目。block 修改会删除该文档的
+所有 chunks、重置切分状态和清理缓存；解析状态保留，之后需重新切分。chunk 修改会更新
+`content_hash`、`token_count` 并清理缓存。提交相同正文不会重置切分状态。
 
 ### `PUT .../{knowledge_base_id}/documents/{document_id}/chunking-config`
 

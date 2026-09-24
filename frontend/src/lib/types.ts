@@ -35,6 +35,13 @@ export type RagDocument = {
   id: string; original_filename: string; stored_filename: string; status: string;
   stages: Record<string, Stage>; [key: string]: unknown;
 };
+export type DerivedEntry = {
+  id: string; ordinal: number; text: string; content_hash: string;
+  metadata: Record<string, unknown>; block_id?: string; token_count?: number;
+  strategy_snapshot?: Record<string, unknown>;
+};
+export type DerivedEntryPage = { items: DerivedEntry[]; total: number; limit: number; offset: number };
+export type RagOperation = { id: string; kind: string; status: string; message: string | null; error: string | null };
 export type ProcessingJob = { id: string; kind: string; status: string; message: string | null; error: string | null; document_ids?: string[]; [key: string]: unknown };
 export type RagModel = { kind: "embedding" | "llm" | "reranker" | string; protocol: string; base_url: string; model_name: string; thinking_effort: string | null; verified_at: string | null; [key: string]: unknown };
 export type GraphNode = { id: string; name: string; entity_type?: string; description?: string };

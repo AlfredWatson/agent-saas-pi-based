@@ -10,6 +10,14 @@ def test_rag_routes_are_workspace_scoped_and_expose_no_answer_generation():
     assert f"{prefix}/jobs/chunking" in paths
     assert f"{prefix}/documents/{{document_id}}/chunking-config" in paths
     assert f"{prefix}/documents/{{document_id}}/blocks" in paths
+    assert {"get", "delete"}.issubset(
+        paths[f"{prefix}/documents/{{document_id}}/blocks"]
+    )
+    assert {"get", "delete"}.issubset(
+        paths[f"{prefix}/documents/{{document_id}}/chunks"]
+    )
+    assert "patch" in paths[f"{prefix}/documents/{{document_id}}/blocks/{{block_id}}"]
+    assert "patch" in paths[f"{prefix}/documents/{{document_id}}/chunks/{{chunk_id}}"]
     assert f"{prefix}/jobs/vectorization" in paths
     assert f"{prefix}/jobs/graph-extraction" in paths
     assert f"{prefix}/graphs:merge" in paths

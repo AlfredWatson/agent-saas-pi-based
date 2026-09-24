@@ -3,6 +3,7 @@ from .common import *  # noqa: F403
 from .knowledge_bases import sanitized_stored_filename
 from app.db.rag.repositories import RagRepository
 from app.integrations.rag.vector_store import get_vector_store
+from app.domain.rag.chunking import content_hash, token_count
 
 
 @router.post(
@@ -141,6 +142,202 @@ async def get_document(
     return render_document(await owned_document(db, kb.id, document_id))
 
 
+def render_block(block: DocumentBlock) -> dict:
+    return {
+        "id": str(block.id),
+        "ordinal": block.ordinal,
+        "text": block.text,
+        "metadata": block.metadata_,
+        "content_hash": block.content_hash,
+    }
+
+
+def render_chunk(chunk: Chunk) -> dict:
+    return {
+        "id": str(chunk.id),
+        "ordinal": chunk.ordinal,
+        "block_id": str(chunk.block_id),
+        "text": chunk.text,
+        "token_count": chunk.token_count,
+        "metadata": chunk.metadata_,
+        "strategy_snapshot": chunk.strategy_snapshot,
+        "content_hash": chunk.content_hash,
+    }
+
+
+@router.get(
+    "/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/documents/{document_id}/blocks"
+)
+async def list_document_blocks(
+    workspace_id: UUID,
+    knowledge_base_id: UUID,
+    document_id: UUID,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    kb = await owned_kb(db, workspace_id, knowledge_base_id, user.id)
+    await owned_document(db, kb.id, document_id)
+    condition = DocumentBlock.document_id == document_id
+    total = await db.scalar(
+        select(func.count()).select_from(DocumentBlock).where(condition)
+    )
+    rows = (
+        await db.scalars(
+            select(DocumentBlock)
+            .where(condition)
+            .order_by(DocumentBlock.ordinal, DocumentBlock.id)
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    return {
+        "items": [render_block(item) for item in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.get(
+    "/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/documents/{document_id}/chunks"
+)
+async def list_document_chunks(
+    workspace_id: UUID,
+    knowledge_base_id: UUID,
+    document_id: UUID,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    kb = await owned_kb(db, workspace_id, knowledge_base_id, user.id)
+    document = await owned_document(db, kb.id, document_id)
+    condition = (Chunk.document_id == document_id) & (
+        Chunk.generation == document.processing_generation
+    )
+    total = await db.scalar(select(func.count()).select_from(Chunk).where(condition))
+    rows = (
+        await db.scalars(
+            select(Chunk)
+            .where(condition)
+            .order_by(Chunk.ordinal, Chunk.id)
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    return {
+        "items": [render_chunk(item) for item in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+async def editable_document(
+    db: AsyncSession,
+    workspace_id: UUID,
+    knowledge_base_id: UUID,
+    document_id: UUID,
+    user_id: UUID,
+) -> tuple[KnowledgeBase, RagDocument]:
+    kb = await owned_kb(db, workspace_id, knowledge_base_id, user_id, lock=True)
+    if kb.status != "active":
+        raise HTTPException(409, "knowledge_base_unavailable")
+    document = await owned_document(db, kb.id, document_id, lock=True)
+    if document.status != "active":
+        raise HTTPException(409, "document_unavailable")
+    await ensure_no_active_document_jobs(
+        db, document.id, ("parsing", "chunking", "vectorization", "graph_extraction")
+    )
+    if (
+        document.vectorization_status != "not_started"
+        or document.graph_status != "not_started"
+    ):
+        raise HTTPException(409, "derived_data_edit_locked")
+    return kb, document
+
+
+@router.patch(
+    "/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/documents/{document_id}/blocks/{block_id}"
+)
+async def update_document_block(
+    workspace_id: UUID,
+    knowledge_base_id: UUID,
+    document_id: UUID,
+    block_id: UUID,
+    body: DerivedTextUpdate,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if not body.text.strip():
+        raise HTTPException(422, "empty_derived_text")
+    kb, document = await editable_document(
+        db, workspace_id, knowledge_base_id, document_id, user.id
+    )
+    block = await db.scalar(
+        select(DocumentBlock)
+        .where(
+            DocumentBlock.id == block_id,
+            DocumentBlock.document_id == document.id,
+        )
+        .with_for_update()
+    )
+    if block is None or document.parsing_status != "succeeded":
+        raise HTTPException(404, "block_not_found")
+    if block.text != body.text:
+        block.text = body.text
+        block.content_hash = content_hash(body.text)
+        await db.execute(delete(Chunk).where(Chunk.document_id == document.id))
+        document.processing_generation += 1
+        document.chunking_status = "not_started"
+        document.chunking_progress = 0
+        document.chunking_message = None
+        document.chunking_error = None
+        document.chunking_updated_at = func.now()
+        await remove_document_cache(kb.id, document.id)
+        await db.commit()
+    return render_block(block)
+
+
+@router.patch(
+    "/workspaces/{workspace_id}/knowledge-bases/{knowledge_base_id}/documents/{document_id}/chunks/{chunk_id}"
+)
+async def update_document_chunk(
+    workspace_id: UUID,
+    knowledge_base_id: UUID,
+    document_id: UUID,
+    chunk_id: UUID,
+    body: DerivedTextUpdate,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if not body.text.strip():
+        raise HTTPException(422, "empty_derived_text")
+    kb, document = await editable_document(
+        db, workspace_id, knowledge_base_id, document_id, user.id
+    )
+    chunk = await db.scalar(
+        select(Chunk)
+        .where(
+            Chunk.id == chunk_id,
+            Chunk.document_id == document.id,
+            Chunk.generation == document.processing_generation,
+        )
+        .with_for_update()
+    )
+    if chunk is None or document.chunking_status != "succeeded":
+        raise HTTPException(404, "chunk_not_found")
+    if chunk.text != body.text:
+        chunk.text = body.text
+        chunk.content_hash = content_hash(body.text)
+        chunk.token_count = token_count(body.text)
+        await remove_document_cache(kb.id, document.id)
+        await db.commit()
+    return render_chunk(chunk)
+
+
 async def remove_document_cache(kb_id: UUID, document_id: UUID) -> None:
     cache = RagCache()
     try:
@@ -226,11 +423,19 @@ async def delete_documents_batch(
     items: list[dict] = []
     for document_id in body.document_ids:
         try:
-            await delete_document(workspace_id, knowledge_base_id, document_id, user, db)
+            await delete_document(
+                workspace_id, knowledge_base_id, document_id, user, db
+            )
             items.append({"document_id": str(document_id), "status": "deleted"})
         except HTTPException as exc:
             await db.rollback()
-            items.append({"document_id": str(document_id), "status": "failed", "error_code": str(exc.detail)})
+            items.append(
+                {
+                    "document_id": str(document_id),
+                    "status": "failed",
+                    "error_code": str(exc.detail),
+                }
+            )
     return {
         "deleted": sum(item["status"] == "deleted" for item in items),
         "failed": sum(item["status"] == "failed" for item in items),

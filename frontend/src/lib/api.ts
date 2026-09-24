@@ -1,7 +1,7 @@
 import { ApiError } from "./errors";
 import type {
   AgentProfile, AgentSession, AuthToken, AvailableModel, ChatMessage, GraphArtifact, GraphDetail,
-  KnowledgeBase, ProcessingJob, Provider, ProviderBinding, ProviderModel,
+  DerivedEntry, DerivedEntryPage, KnowledgeBase, ProcessingJob, Provider, ProviderBinding, ProviderModel, RagOperation,
   RagCapabilities, RagDocument, RagModel, RetrievalResult, RuntimeState, User, Workspace,
 } from "./types";
 
@@ -101,7 +101,11 @@ export const api = {
   createKnowledgeBase: (workspaceId: string, body: Record<string, string>) => request<KnowledgeBase>(`/workspaces/${workspaceId}/knowledge-bases`, json(body)),
   updateKnowledgeBase: (workspaceId: string, id: string, body: Record<string, unknown>) => request<KnowledgeBase>(`/workspaces/${workspaceId}/knowledge-bases/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteKnowledgeBase: (workspaceId: string, id: string) => request<{ operation_id: string; status: string }>(`/workspaces/${workspaceId}/knowledge-bases/${id}`, { method: "DELETE" }),
+  copyKnowledgeBase: (workspaceId: string, id: string, name: string) => request<{ operation_id: string; target_knowledge_base_id: string; status: string }>(`/workspaces/${workspaceId}/knowledge-bases/${id}/copy`, json({ name })),
+  ragOperation: (id: string) => request<RagOperation>(`/rag/operations/${id}`),
   documents: (workspaceId: string, kbId: string) => request<{ items: RagDocument[] }>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/documents`),
+  documentEntries: (workspaceId: string, kbId: string, documentId: string, kind: "blocks" | "chunks", limit: number, offset: number) => request<DerivedEntryPage>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/documents/${documentId}/${kind}?limit=${limit}&offset=${offset}`),
+  updateDocumentEntry: (workspaceId: string, kbId: string, documentId: string, kind: "blocks" | "chunks", entryId: string, text: string) => request<DerivedEntry>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/documents/${documentId}/${kind}/${entryId}`, { method: "PATCH", body: JSON.stringify({ text }) }),
   uploadDocuments: (workspaceId: string, kbId: string, files: File[]) => {
     const form = new FormData(); files.forEach((file) => form.append("files", file));
     return request<{ items: Array<{ status: string; document?: RagDocument; error?: string }> }>(`/workspaces/${workspaceId}/knowledge-bases/${kbId}/documents`, { method: "POST", body: form });

@@ -89,6 +89,10 @@ class ChunkingConfigInput(BaseModel):
     config: dict[str, object] | None = None
 
 
+class DerivedTextUpdate(BaseModel):
+    text: str
+
+
 class GraphMergeInput(BaseModel):
     name: str = Field(min_length=1, max_length=256)
     graph_ids: list[UUID] = Field(min_length=2, max_length=100)
