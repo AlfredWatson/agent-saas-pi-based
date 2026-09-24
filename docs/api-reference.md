@@ -580,6 +580,9 @@ Workspace 名称重复返回 `409 knowledge_base_exists`。
 
 异步删除知识库，立即返回 `202 {"operation_id":"<uuid>","status":"queued"}`。服务会先取消
 排队/执行中的任务，再删除数据库数据及 Redis 缓存；完成前知识库状态为 `deleting`。
+若仍有当前 Agent 会话绑定该知识库，返回 `409 knowledge_base_in_use`，不会启动删除；
+先删除相关会话后可重试。提交成功后轮询 `GET /api/v1/rag/operations/{operation_id}`，
+直到 `succeeded` 或 `failed`，不能将 `202` 视为删除完成。
 
 ### 8.3 模型配置
 

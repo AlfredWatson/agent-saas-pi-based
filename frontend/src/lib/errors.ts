@@ -24,6 +24,7 @@ const messages: Record<string, string> = {
   invalid_knowledge_base_binding: "知识库必须属于当前工作区且处于可用状态。",
   agent_rag_unavailable: "Runtime 尚未配置到 Gateway 的 RAG 内部地址。",
   knowledge_base_exists: "当前工作区已有同名知识库。",
+  knowledge_base_in_use: "仍有 Agent 会话绑定该知识库，请先删除相关会话。",
   vector_backend_not_enabled: "该向量后端未在当前部署中启用。",
   embedding_model_required: "请先配置并验证 embedding 模型。",
   llm_model_required: "请先配置并验证 LLM 模型。",

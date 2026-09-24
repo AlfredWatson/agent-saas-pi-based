@@ -1,5 +1,6 @@
 # ruff: noqa: F403, F405
 from .common import *  # noqa: F403
+from app.db.models import AgentSessionKnowledgeBase
 
 
 @router.post(
@@ -76,6 +77,13 @@ async def delete_knowledge_base(
     kb = await owned_kb(db, workspace_id, knowledge_base_id, user.id, lock=True)
     if kb.status != "active":
         raise HTTPException(409, "knowledge_base_unavailable")
+    bound_session = await db.scalar(
+        select(AgentSessionKnowledgeBase.session_id)
+        .where(AgentSessionKnowledgeBase.knowledge_base_id == kb.id)
+        .limit(1)
+    )
+    if bound_session is not None:
+        raise HTTPException(409, "knowledge_base_in_use")
     kb.status = "deleting"
     await db.execute(
         update(ProcessingJob)

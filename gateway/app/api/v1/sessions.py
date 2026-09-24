@@ -510,7 +510,7 @@ async def create_session(
                         KnowledgeBase.user_id == user.id,
                         KnowledgeBase.workspace_id == workspace.id,
                         KnowledgeBase.status == "active",
-                    )
+                    ).order_by(KnowledgeBase.id).with_for_update()
                 )
             ).all()
         )

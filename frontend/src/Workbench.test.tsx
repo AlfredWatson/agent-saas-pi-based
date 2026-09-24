@@ -129,12 +129,85 @@ test("successful retrieval renders the API's top-level document and graph result
 const session = { id: "session-1", title: "测试会话", workspace_id: "workspace-1" } as AgentSession;
 const sessionWorkspace = { id: "workspace-1", name: "测试工作区", is_current: true } as Workspace;
 
-function renderSessionDirectory() {
+function renderSessionDirectory(kbs: KnowledgeBase[] = []) {
   const noop = () => {};
-  render(<QueryClientProvider client={new QueryClient()}><MemoryRouter initialEntries={["/chat/session-1"]}>
-    <ExpandedDirectory userEmail="user@example.com" workspaces={[sessionWorkspace]} workspace={sessionWorkspace} kbs={[]} sessions={[session]} expanded={sessionWorkspace.id} onOpenWorkspace={noop} onKnowledgeHome={noop} onKnowledge={noop} onCreateKnowledge={noop} onSession={noop} onAgent={noop} onNewChat={noop} onCreateWorkspace={noop} onCollapse={noop} onSignOut={noop} />
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter initialEntries={[kbs.length ? "/knowledge/kb-1" : "/chat/session-1"]}><CurrentPath />
+    <ExpandedDirectory userEmail="user@example.com" workspaces={[sessionWorkspace]} workspace={sessionWorkspace} kbs={kbs} sessions={[session]} expanded={sessionWorkspace.id} onOpenWorkspace={noop} onKnowledgeHome={noop} onKnowledge={noop} onCreateKnowledge={noop} onSession={noop} onAgent={noop} onNewChat={noop} onCreateWorkspace={noop} onCollapse={noop} onSignOut={noop} />
   </MemoryRouter></QueryClientProvider>);
 }
+
+test("knowledge menu opens, closes, and disables actions for unavailable knowledge bases", () => {
+  renderSessionDirectory([ragKb, { ...ragKb, id: "kb-2", name: "复制中", status: "copying" }]);
+  const trigger = screen.getByRole("button", { name: "知识库操作：原知识库" });
+  fireEvent.click(trigger);
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByRole("menuitem", { name: "删除知识库" })).toBeTruthy();
+  fireEvent.keyDown(document, { key: "Escape" });
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(screen.getByRole("button", { name: "知识库操作：复制中" }));
+  expect((screen.getByRole("menuitem", { name: "重命名" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("menuitem", { name: "删除知识库" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test("knowledge rename trims the name and shows duplicate-name errors", async () => {
+  const rename = vi.spyOn(api, "updateKnowledgeBase").mockRejectedValueOnce(new ApiError(409, "knowledge_base_exists"))
+    .mockResolvedValueOnce({ ...ragKb, name: "新知识库" });
+  renderSessionDirectory([ragKb]);
+  fireEvent.click(screen.getByRole("button", { name: "知识库操作：原知识库" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "重命名" }));
+  expect((screen.getByRole("textbox", { name: "知识库名称" }) as HTMLInputElement).value).toBe("原知识库");
+  fireEvent.change(screen.getByRole("textbox", { name: "知识库名称" }), { target: { value: "  新知识库  " } });
+  fireEvent.click(screen.getByRole("button", { name: "保存" }));
+  expect(await screen.findByText("当前工作区已有同名知识库。")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "保存" }));
+  await waitFor(() => expect(rename).toHaveBeenCalledTimes(2));
+  expect(rename).toHaveBeenCalledWith("workspace-1", "kb-1", { name: "新知识库" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("knowledge deletion requires confirmation and reports bound sessions", async () => {
+  const remove = vi.spyOn(api, "deleteKnowledgeBase").mockRejectedValue(new ApiError(409, "knowledge_base_in_use"));
+  renderSessionDirectory([ragKb]);
+  fireEvent.click(screen.getByRole("button", { name: "知识库操作：原知识库" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "删除知识库" }));
+  fireEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(remove).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "知识库操作：原知识库" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "删除知识库" }));
+  fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+  expect(await screen.findByText("仍有 Agent 会话绑定该知识库，请先删除相关会话。")).toBeTruthy();
+  expect(remove).toHaveBeenCalledExactlyOnceWith("workspace-1", "kb-1");
+  expect(screen.getByTestId("current-path").textContent).toBe("/knowledge/kb-1");
+});
+
+test("knowledge deletion waits for operation success before closing progress", async () => {
+  let complete!: (value: { id: string; kind: string; status: string; message: null; error: null }) => void;
+  const pending = new Promise<{ id: string; kind: string; status: string; message: null; error: null }>((resolve) => { complete = resolve; });
+  vi.spyOn(api, "deleteKnowledgeBase").mockResolvedValue({ operation_id: "operation-1", status: "queued" });
+  vi.spyOn(api, "ragOperation").mockReturnValue(pending);
+  renderSessionDirectory([ragKb]);
+  fireEvent.click(screen.getByRole("button", { name: "知识库操作：原知识库" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "删除知识库" }));
+  fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+  await waitFor(() => expect(screen.getByTestId("current-path").textContent).toBe("/knowledge"));
+  expect(screen.getByText(/正在删除知识库/)).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: "删除知识库" })).toBeTruthy();
+  complete({ id: "operation-1", kind: "delete", status: "succeeded", message: null, error: null });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("failed knowledge deletion remains visible and is not reported as complete", async () => {
+  vi.spyOn(api, "deleteKnowledgeBase").mockResolvedValue({ operation_id: "operation-2", status: "queued" });
+  vi.spyOn(api, "ragOperation").mockResolvedValue({ id: "operation-2", kind: "delete", status: "failed", message: "failed", error: "删除失败" });
+  renderSessionDirectory([ragKb]);
+  fireEvent.click(screen.getByRole("button", { name: "知识库操作：原知识库" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "删除知识库" }));
+  fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+  expect(await screen.findByText("删除失败")).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: "删除知识库" })).toBeTruthy();
+  fireEvent.click(screen.getByText("关闭", { selector: "button" }));
+  expect(screen.getByRole("alert").textContent).toContain("删除失败");
+});
 
 test("session menu trims renames and requires confirmation before deletion", async () => {
   const rename = vi.spyOn(api, "updateSessionTitle").mockResolvedValue({ ...session, title: "新名称" });
