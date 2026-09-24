@@ -111,6 +111,7 @@ memory-bank
 /agent-runtime/.runtime-data/**
 .runtime-data/**
 /test/files/**
+/test/datasets/**
 /docker/volumes/**
 /tmp/**
 /frontend/node_modules/**
