@@ -283,6 +283,20 @@ def public_tool_event(
     return None
 
 
+def public_compaction_event(event: dict) -> tuple[str, dict] | None:
+    """Expose only Pi's compaction reason and outcome on the public stream."""
+    reason = event.get("reason")
+    if not isinstance(reason, str) or reason not in {"manual", "threshold", "overflow"}:
+        return None
+    if event.get("type") == "compaction_started":
+        return "compaction.started", {"reason": reason}
+    if event.get("type") == "compaction_ended":
+        status = event.get("status")
+        if isinstance(status, str) and status in {"completed", "failed", "aborted"}:
+            return "compaction.ended", {"reason": reason, "status": status}
+    return None
+
+
 async def project_message_end(
     db: AsyncSession,
     session_id: UUID,
@@ -423,6 +437,10 @@ async def consume_run(
                     await publish(run_id, "assistant.delta", {"delta": delta})
                 elif kind in {"tool_started", "tool_completed"}:
                     public = public_tool_event(event, secret_values)
+                    if public:
+                        await publish(run_id, *public)
+                elif kind in {"compaction_started", "compaction_ended"}:
+                    public = public_compaction_event(event)
                     if public:
                         await publish(run_id, *public)
                 elif kind == "message_end":

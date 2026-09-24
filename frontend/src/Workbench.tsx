@@ -20,7 +20,7 @@ const stageLabels: Record<string, string> = { parsing: "解析", chunking: "切�
 
 type KnowledgeTab = "models" | "graphs" | "advanced" | "retrieve";
 type AgentTab = "files" | "bindings" | "runtime";
-type PendingChat = { content: string; response: string; tools: Array<{ name: string; data: Record<string, unknown> }> };
+type PendingChat = { content: string; response: string; tools: Array<{ name: string; data: Record<string, unknown> }>; compacting: boolean };
 
 function usePanes() {
   const [left, setLeft] = useState(() => Number(localStorage.getItem("pi.left-width")) || 280);
@@ -84,7 +84,7 @@ export function Workbench() {
     <section className="min-w-0 overflow-hidden">{selectedKb && workspace
       ? <KnowledgeCenter workspace={workspace} kb={selectedKb} graphId={graphId} onBackFromGraph={() => setGraphId(null)} />
       : location.pathname === "/knowledge" ? <KnowledgeLanding />
-      : selectedSession ? <ChatCenter workspace={workspace} selected={selectedSession} onOpenBindings={() => { setAgentTab("bindings"); panes.setRightCollapsed(false); }} />
+      : selectedSession ? <ChatCenter key={selectedSession.id} workspace={workspace} selected={selectedSession} onOpenBindings={() => { setAgentTab("bindings"); panes.setRightCollapsed(false); }} />
       : <AgentLanding />}</section>
     <div className={`bg-slate-900 ${panes.rightCollapsed ? "" : "cursor-col-resize hover:bg-sky-500/60"}`} onPointerDown={panes.rightCollapsed ? undefined : panes.drag("right")} />
     <aside className="scrollbar min-w-0 overflow-auto border-l border-slate-800 bg-slate-950">
@@ -325,7 +325,7 @@ function GraphCanvas({ workspace, kb, graphId, onBack }: { workspace: Workspace;
   return <div className="flex h-screen min-w-0 flex-col"><header className="flex items-center gap-3 border-b border-slate-800 p-3"><button className="btn" onClick={onBack}><ArrowLeft size={15} />返回文档</button><div className="min-w-0"><h1 className="truncate text-lg font-semibold">{graph.data?.name ?? "知识图谱"}</h1><p className="text-xs muted">只读图谱，可缩放、平移查看</p></div></header><ErrorNotice error={graph.error} /><div className="min-h-0 flex-1">{graph.data ? <ReactFlow nodes={nodes} edges={edges} fitView nodesDraggable={false} nodesConnectable={false} elementsSelectable><Background /><Controls /><MiniMap /></ReactFlow> : <div className="grid h-full place-items-center muted">正在读取图谱…</div>}</div></div>;
 }
 
-function ChatCenter({ workspace, selected, onOpenBindings }: { workspace?: Workspace; selected: AgentSession; onOpenBindings: () => void }) {
+export function ChatCenter({ workspace, selected, onOpenBindings }: { workspace?: Workspace; selected: AgentSession; onOpenBindings: () => void }) {
   const qc = useQueryClient(); const [text, setText] = useState(""); const [pending, setPending] = useState<PendingChat | null>(null); const [error, setError] = useState<unknown>(null); const [attachmentMenu, setAttachmentMenu] = useState(false); const [modelMenu, setModelMenu] = useState(false); const [uploadNotice, setUploadNotice] = useState(""); const fileRef = useRef<HTMLInputElement>(null); const bottomRef = useRef<HTMLDivElement>(null);
   const session = useQuery({ queryKey: ["session", selected?.id], queryFn: () => api.session(selected!.id), enabled: Boolean(selected) }); const active = session.data ?? selected;
   const messages = useQuery({ queryKey: ["messages", active?.id], queryFn: () => api.messages(active!.id), enabled: Boolean(active) });
@@ -336,7 +336,28 @@ function ChatCenter({ workspace, selected, onOpenBindings }: { workspace?: Works
   const setModel = useMutation({ mutationFn: (model: AvailableModel) => api.setSessionModelConfig(active!.id, { provider_binding_id: model.provider_binding_id, model_id: model.id, thinking_level: model.thinking_levels.includes(active?.thinking_level ?? "") ? active!.thinking_level : model.thinking_levels[0] ?? null }), onSuccess: () => { setModelMenu(false); void qc.invalidateQueries({ queryKey: ["session", active?.id] }); } });
   const setThinking = useMutation({ mutationFn: (thinking: string) => api.setSessionModelConfig(active!.id, { provider_binding_id: active!.provider_binding_id!, model_id: active!.model_id!, thinking_level: thinking || null }), onSuccess: () => void qc.invalidateQueries({ queryKey: ["session", active?.id] }) });
   const uploadFile = async (file: File) => { if (!workspace) return; setError(null); try { await api.uploadWorkspaceFile(workspace.id, file.name, file, false); setUploadNotice(`已上传到工作区：${file.name}`); } catch (uploadError) { if (String(uploadError).includes("file_exists") && window.confirm("工作区已有同名文件，是否覆盖？")) { await api.uploadWorkspaceFile(workspace.id, file.name, file, true); setUploadNotice(`已覆盖工作区文件：${file.name}`); } else setError(uploadError); } finally { void qc.invalidateQueries({ queryKey: ["workspace-files", workspace.id] }); } };
-  const send = async () => { const content = text.trim(); if (!active || !content || running) return; if (!active.model_configured) { onOpenBindings(); setError(new Error("请先选择模型")); return; } setPending({ content, response: "", tools: [] }); setText(""); setError(null); try { await streamMessage(active.id, content, (event) => { if (event.name === "assistant.delta") setPending((value) => value ? { ...value, response: `${value.response}${String(event.data.delta ?? "")}` } : value); if (event.name.startsWith("tool.")) setPending((value) => value ? { ...value, tools: [...value.tools, event] } : value); }); } catch (sendError) { setError(sendError); } finally { setPending(null); void qc.invalidateQueries({ queryKey: ["messages", active.id] }); void qc.invalidateQueries({ queryKey: ["session", active.id] }); void qc.invalidateQueries({ queryKey: ["sessions"] }); } };
+  const send = async () => {
+    const content = text.trim();
+    if (!active || !content || running) return;
+    if (!active.model_configured) { onOpenBindings(); setError(new Error("请先选择模型")); return; }
+    setPending({ content, response: "", tools: [], compacting: false });
+    setText(""); setError(null);
+    try {
+      await streamMessage(active.id, content, (event) => {
+        if (event.name === "assistant.delta") setPending((value) => value ? { ...value, response: `${value.response}${String(event.data.delta ?? "")}` } : value);
+        else if (event.name.startsWith("tool.")) setPending((value) => value ? { ...value, tools: [...value.tools, event] } : value);
+        else if (event.name === "compaction.started") setPending((value) => value ? { ...value, compacting: true } : value);
+        else if (["compaction.ended", "message.completed", "message.failed", "done"].includes(event.name)) setPending((value) => value ? { ...value, compacting: false } : value);
+      });
+    } catch (sendError) {
+      setError(sendError);
+    } finally {
+      setPending(null);
+      void qc.invalidateQueries({ queryKey: ["messages", active.id] });
+      void qc.invalidateQueries({ queryKey: ["session", active.id] });
+      void qc.invalidateQueries({ queryKey: ["sessions"] });
+    }
+  };
   if (!workspace) return <div className="grid h-screen place-items-center muted">正在读取 workspace…</div>;
   return <div className="flex h-screen min-w-0 flex-col"><header className="flex items-center gap-2 border-b border-slate-800 p-3"><h1 className="min-w-0 flex-1 truncate text-lg font-semibold">{active?.title ?? "新聊天"}</h1>{active?.knowledge_base_ids.length ? <span className="text-xs muted">已绑定 {active.knowledge_base_ids.length} 个知识库</span> : null}</header><div className="scrollbar flex-1 space-y-4 overflow-auto p-4"><ErrorNotice error={messages.error ?? error} />{messages.data?.items.map((message) => <MessageBubble key={message.id} message={message} />)}{pending && <PendingMessage value={pending} />}{uploadNotice && <p className="text-center text-xs text-emerald-300">{uploadNotice}</p>}<div ref={bottomRef} /></div>{active && <ChatComposer text={text} setText={setText} running={running} selectedModel={selectedModel} active={active} models={models.data?.items ?? []} attachmentMenu={attachmentMenu} setAttachmentMenu={setAttachmentMenu} modelMenu={modelMenu} setModelMenu={setModelMenu} fileRef={fileRef} uploadFile={uploadFile} onSend={send} onSelectModel={(model) => setModel.mutate(model)} onThinking={(thinking) => setThinking.mutate(thinking)} onOpenBindings={onOpenBindings} />}</div>;
 }
@@ -349,7 +370,14 @@ function ModelMenu({ models, active, selected, onSelect, onThinking, onBindings 
   return <div className="absolute bottom-[calc(100%+0.75rem)] right-0 z-30 w-80 rounded-2xl border border-slate-700 bg-slate-900 p-2 shadow-2xl"><p className="px-2 py-1 text-xs muted">选择模型</p>{models.map((model) => <button type="button" key={`${model.provider_binding_id}:${model.id}`} className={`flex w-full items-center rounded-xl px-3 py-2 text-left hover:bg-slate-800 ${selected?.provider_binding_id === model.provider_binding_id && selected.id === model.id ? "bg-slate-800 text-sky-200" : ""}`} onClick={() => onSelect(model)}><span className="min-w-0 flex-1 truncate">{model.name}</span><small className="ml-2 muted">{model.binding_name}</small></button>)}{selected && thinking.length > 0 && <div className="mt-2 border-t border-slate-700 px-2 pt-3"><div className="flex items-center justify-between text-sm"><span>思考强度</span><span className="text-sky-200">{activeThinking}</span></div><input className="mt-3 w-full accent-sky-500" type="range" min={0} max={thinking.length - 1} step={1} value={Math.max(0, thinking.indexOf(activeThinking))} onChange={(event) => onThinking(thinking[Number(event.target.value)])} /><div className="flex justify-between text-[10px] muted">{thinking.map((level) => <span key={level}>{level}</span>)}</div></div>}</div>;
 }
 function MessageBubble({ message }: { message: ChatMessage }) { const user = message.role === "user"; if (!user && message.role !== "assistant") return <details className="rounded bg-slate-900 p-3 text-xs"><summary>{message.tool_name ?? message.role}</summary><pre className="mt-2 overflow-auto">{JSON.stringify(message.arguments ?? message.result, null, 2)}</pre></details>; return <article className={`flex ${user ? "justify-end" : "justify-start"}`}><div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm ${user ? "bg-sky-700 text-white" : "bg-slate-800"}`}>{user ? <p className="whitespace-pre-wrap">{message.content}</p> : <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}</div></article>; }
-function PendingMessage({ value }: { value: PendingChat }) { return <><article className="flex justify-end"><div className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-sky-700 px-4 py-3 text-sm text-white">{value.content}</div></article>{value.tools.map((event, index) => <details key={`${event.name}-${index}`} className="rounded border border-sky-800/60 bg-sky-950/30 p-3 text-xs"><summary>{event.name === "tool.started" ? "正在调用" : "已完成"} {String(event.data.toolName ?? event.data.tool ?? "工具")}</summary><pre className="mt-2 overflow-auto">{JSON.stringify(event.data, null, 2)}</pre></details>)}<article className="flex justify-start"><div className="max-w-[85%] rounded-2xl bg-slate-800 px-4 py-3 text-sm"><div className="markdown">{value.response ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{value.response}</ReactMarkdown> : <span className="muted">Agent 正在思考…</span>}</div></div></article></>; }
+function PendingMessage({ value }: { value: PendingChat }) {
+  return <>
+    <article className="flex justify-end"><div className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-sky-700 px-4 py-3 text-sm text-white">{value.content}</div></article>
+    {value.tools.map((event, index) => <details key={`${event.name}-${index}`} className="rounded border border-sky-800/60 bg-sky-950/30 p-3 text-xs"><summary>{event.name === "tool.started" ? "正在调用" : "已完成"} {String(event.data.toolName ?? event.data.tool ?? "工具")}</summary><pre className="mt-2 overflow-auto">{JSON.stringify(event.data, null, 2)}</pre></details>)}
+    {(value.response || !value.compacting) && <article className="flex justify-start"><div className="max-w-[85%] rounded-2xl bg-slate-800 px-4 py-3 text-sm"><div className="markdown">{value.response ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{value.response}</ReactMarkdown> : <span className="muted">Agent 正在思考…</span>}</div></div></article>}
+    {value.compacting && <p role="status" className="text-center text-xs muted">正在压缩…</p>}
+  </>;
+}
 
 function CreateSession({ open, workspace, onClose, onCreated }: { open: boolean; workspace: Workspace; onClose: () => void; onCreated: (id: string) => void }) { const [chosen, setChosen] = useState<string[]>([]); const kbs = useQuery({ queryKey: ["knowledge-bases", workspace.id], queryFn: () => api.knowledgeBases(workspace.id), enabled: open }); const mutation = useMutation({ mutationFn: () => api.createSession({ workspace_id: workspace.id, knowledge_base_ids: chosen }), onSuccess: (session) => onCreated(session.id) }); const toggle = (id: string) => setChosen((old) => old.includes(id) ? old.filter((item) => item !== id) : [...old, id]); return <Modal open={open} title="新聊天" onClose={onClose}><Form onSubmit={(event) => { event.preventDefault(); mutation.mutate(); }}><fieldset><legend className="text-sm">绑定知识库（可选）</legend><div className="mt-2 max-h-56 overflow-auto">{kbs.data?.items.filter((item) => item.status === "active").map((kb) => <label className="flex gap-2 p-2 text-sm" key={kb.id}><input type="checkbox" checked={chosen.includes(kb.id)} onChange={() => toggle(kb.id)} />{kb.name}</label>)}</div></fieldset><ErrorNotice error={mutation.error} /><button className="btn btn-primary w-full" disabled={mutation.isPending}>创建聊天</button></Form></Modal>; }
 function AgentInfo({ workspace, tab, setTab }: { workspace?: Workspace; tab: AgentTab; setTab: (value: AgentTab) => void }) { return <div className="p-3"><Tabs labels={[["files", "工作区文件"], ["bindings", "Provider Bindings"], ["runtime", "Runtime"]]} value={tab} onChange={(value) => setTab(value as AgentTab)} />{workspace && tab === "files" && <WorkspaceFiles workspace={workspace} />}{workspace && tab === "bindings" && <Bindings workspace={workspace} />}{tab === "runtime" && <Runtime />}</div>; }

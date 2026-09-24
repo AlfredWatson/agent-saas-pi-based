@@ -5,6 +5,7 @@ import { tenantFrom } from "./auth/internal-auth.js";
 import { SessionRegistry } from "./sessions/session-registry.js";
 import { configureManagedSession, createSession, deleteSessionData, deleteWorkspaceData, ensureRuntimeHome, InvalidSessionFileKeyError, type SessionInput, type WorkspaceSessionFile } from "./sessions/session-factory.js";
 import { projectMessageEnd, type CompletedTool } from "./sessions/event-projection.js";
+import { projectCompactionEvent } from "./sessions/compaction-event.js";
 import { fauxProvider, getSupportedThinkingLevels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import {
 	deleteWorkspaceFile,
@@ -171,6 +172,8 @@ app.post<{ Params: { id: string }; Body: { content: string } }>("/internal/v1/se
 	const completedTools = new Map<string, CompletedTool>();
 	const enqueue = (event: Record<string, unknown>) => events.push(JSON.stringify(event));
 	const unsubscribe = managed.session.subscribe((event) => {
+		const compaction = projectCompactionEvent(event);
+		if (compaction) enqueue(compaction);
 		if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") events.push(JSON.stringify({ type: "text_delta", delta: event.assistantMessageEvent.delta }));
 		if (event.type === "tool_execution_start") {
 			const args = managed.redactor.payload(event.args);

@@ -420,6 +420,8 @@ Session，此后可独立调整。
 | `assistant.delta` | `{"delta":"..."}` | 助手文本增量。 |
 | `tool.started` | `{"tool":"...","toolCallId":"...","toolName":"...","args":{},"payload_truncated":false}` | 工具开始。 |
 | `tool.completed` | `{"tool":"...","toolCallId":"...","toolName":"...","result":{},"isError":false,"payload_truncated":false}` | 工具结束。 |
+| `compaction.started` | `{"reason":"threshold"}` | Pi 开始压缩上下文；`reason` 为 `threshold`、`overflow` 或 `manual`。 |
+| `compaction.ended` | `{"reason":"threshold","status":"completed"}` | 压缩结束；`status` 为 `completed`、`failed` 或 `aborted`。不包含摘要或原始错误。 |
 | `message.completed` | `{}` | Runtime 返回 `agent_settled`，Run 成功完成。 |
 | `message.failed` | `{"error":"runtime_stream_failed"}` | Runtime 流异常或未正常 settled。 |
 | `done` | `{}` | 本次 SSE 终止事件。 |

@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
-from app.api.v1.sessions import MessageInput, owned, project_message_end, public_tool_event, stream
+from app.api.v1.sessions import MessageInput, owned, project_message_end, public_compaction_event, public_tool_event, stream
 
 
 class CapturingSession:
@@ -105,3 +105,21 @@ def test_public_sse_tool_names_remain_compatible_and_payloads_are_safe():
 
     assert started == ("tool.started", {"tool": "read", "toolCallId": "call-1", "toolName": "read", "args": {"token": "[REDACTED]"}, "payload_truncated": False})
     assert completed == ("tool.completed", {"tool": "read", "toolCallId": "call-1", "toolName": "read", "result": {"value": "[REDACTED]"}, "isError": True, "payload_truncated": False})
+
+
+def test_public_compaction_events_keep_order_and_drop_private_fields():
+    events = [
+        {"type": "compaction_started", "reason": "threshold", "summary": "private context"},
+        {"type": "compaction_ended", "reason": "threshold", "status": "completed", "errorMessage": "provider-key"},
+        {"type": "compaction_ended", "reason": "overflow", "status": "failed", "errorMessage": "provider-key"},
+    ]
+    projected = [public_compaction_event(event) for event in events]
+    assert projected == [
+        ("compaction.started", {"reason": "threshold"}),
+        ("compaction.ended", {"reason": "threshold", "status": "completed"}),
+        ("compaction.ended", {"reason": "overflow", "status": "failed"}),
+    ]
+    assert "provider-key" not in repr(projected)
+    assert "private context" not in repr(projected)
+    assert public_compaction_event({"type": "compaction_ended", "reason": "threshold", "status": "unknown"}) is None
+    assert public_compaction_event({"type": "compaction_started", "reason": ["threshold"]}) is None
