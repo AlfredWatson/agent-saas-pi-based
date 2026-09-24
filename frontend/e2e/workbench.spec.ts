@@ -1,13 +1,15 @@
 import { expect, test } from "@playwright/test";
+import { readFile } from "node:fs/promises";
 
 const workspace = { id: "workspace-1", name: "default", status: "active", is_current: true };
 const knowledgeBase = { id: "kb-1", workspace_id: "workspace-1", name: "产品文档", status: "active", version: 1, file_backend: "local", block_backend: "postgres", chunk_backend: "postgres", vector_backend: "pgvector", graph_backend: "postgres", concurrency: { parsing: 1, chunking: 1, embedding: 1, graph: 1 } };
 const baseSession = { id: "session-1", status: "active", title: "测试会话", knowledge_base_ids: [], workspace_id: "workspace-1", profile_id: null, provider_binding_id: "binding-1", model_id: "model-1", thinking_level: "medium", model_configured: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", latest_run: null };
 const document = { id: "document-uuid-1", original_filename: "用户手册.pdf", stored_filename: "safe-user-manual.pdf", status: "active", stages: { parsing: { status: "not_started", progress: 0 }, chunking: { status: "not_started", progress: 0 }, vectorization: { status: "not_started", progress: 0 }, graph: { status: "not_started", progress: 0 } } };
 
-async function mockApi(page: import("@playwright/test").Page) {
-  let sent = false; let fileRequests = 0; let bindingVisible = true;
+async function mockApi(page: import("@playwright/test").Page, options: { extraSession?: boolean; deleteFailure?: number } = {}) {
+  let sent = false; let fileRequests = 0; let bindingVisible = true; let deleteRequests = 0; let sessionDeleted = false;
   let session = { ...baseSession };
+  let extraSession = options.extraSession ? { ...baseSession, id: "session-2", title: "另一会话" } : null;
   await page.route("**/api/v1/**", async (route) => {
     const path = new URL(route.request().url()).pathname; const method = route.request().method(); const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
     if (path.endsWith("/auth/login")) return json({ access_token: "browser-test-token", token_type: "bearer" });
@@ -15,8 +17,16 @@ async function mockApi(page: import("@playwright/test").Page) {
     if (path.endsWith("/sessions/session-1/messages:stream")) { sent = true; return route.fulfill({ status: 200, contentType: "text/event-stream", body: "event: message.accepted\ndata: {}\n\nevent: assistant.delta\ndata: {\"delta\":\"流式回复\"}\n\nevent: message.completed\ndata: {}\n\nevent: done\ndata: {}\n\n" }); }
     if (path.endsWith("/sessions/session-1/messages")) return json({ items: sent ? [{ id: "message-user", run_id: "run-1", role: "user", content: "你好", sequence: 1, status: "completed", created_at: "2026-01-01T00:00:00Z", tool_call_id: null, tool_name: null, arguments: null, result: null, is_error: null, payload_truncated: false }, { id: "message-agent", run_id: "run-1", role: "assistant", content: "流式回复", sequence: 2, status: "completed", created_at: "2026-01-01T00:00:01Z", tool_call_id: null, tool_name: null, arguments: null, result: null, is_error: null, payload_truncated: false }] : [] });
     if (path.endsWith("/sessions/session-1/model-config") && method === "PUT") { const body = route.request().postDataJSON() as { provider_binding_id: string; model_id: string; thinking_level: string | null }; session = { ...session, ...body, model_configured: true }; return json(session); }
-    if (path.endsWith("/sessions/session-1")) return json(session);
-    if (path.endsWith("/sessions")) return json({ items: [session] });
+    if (path.endsWith("/sessions/session-1")) {
+      if (method === "PATCH") { session = { ...session, ...route.request().postDataJSON() as { title: string } }; return json(session); }
+      if (method === "DELETE") { deleteRequests += 1; if (options.deleteFailure) return json({ detail: options.deleteFailure === 409 ? "session_busy" : "session_delete_incomplete" }, options.deleteFailure); sessionDeleted = true; return route.fulfill({ status: 204 }); }
+      return json(session);
+    }
+    if (path.endsWith("/sessions/session-2")) {
+      if (method === "DELETE") { deleteRequests += 1; if (options.deleteFailure) return json({ detail: options.deleteFailure === 409 ? "session_busy" : "session_delete_incomplete" }, options.deleteFailure); extraSession = null; return route.fulfill({ status: 204 }); }
+      return json(extraSession);
+    }
+    if (path.endsWith("/sessions")) return json({ items: [sessionDeleted ? null : session, extraSession].filter(Boolean) });
     if (path.endsWith("/workspaces/workspace-1/available-models")) return json({ items: [{ id: "model-1", provider_id: "openai", name: "GPT Test", thinking_levels: ["low", "medium", "high"], provider_binding_id: "binding-1", binding_name: "测试 Binding" }, { id: "model-2", provider_id: "openai", name: "GPT Alternate", thinking_levels: [], provider_binding_id: "binding-2", binding_name: "备用 Binding" }] });
     if (path.endsWith("/workspaces/workspace-1/knowledge-bases/kb-1/documents")) return json({ items: [document] });
     if (path.endsWith("/workspaces/workspace-1/knowledge-bases/kb-1/retrieve") && method === "POST") {
@@ -43,7 +53,7 @@ async function mockApi(page: import("@playwright/test").Page) {
     if (path.endsWith("/runtime")) return json({ state: "stopped", image: null, last_error: null, last_seen_at: null });
     return json({});
   });
-  return { fileRequests: () => fileRequests };
+  return { fileRequests: () => fileRequests, deleteRequests: () => deleteRequests };
 }
 
 async function signIn(page: import("@playwright/test").Page) {
@@ -120,6 +130,71 @@ test("knowledge settings and chat composer expose the requested controls", async
   await page.getByTitle("发送").click();
   await expect(page.getByText("你好", { exact: true })).toBeVisible();
   await expect(page.getByText("流式回复", { exact: true })).toBeVisible();
+});
+
+test("session menu renames the active chat and exports its public history as JSON", async ({ page }) => {
+  await mockApi(page); await signIn(page);
+  await page.getByRole("button", { name: "测试会话", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "测试会话" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "删除会话" })).toHaveCount(0);
+
+  const actions = page.getByRole("button", { name: "会话操作：测试会话" });
+  await actions.click();
+  await expect(page.getByRole("menuitem", { name: "重命名" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menuitem", { name: "重命名" })).toHaveCount(0);
+  await actions.click();
+  await page.getByRole("heading", { name: "测试会话" }).click();
+  await expect(page.getByRole("menuitem", { name: "重命名" })).toHaveCount(0);
+  await actions.click();
+  await page.getByRole("menuitem", { name: "重命名" }).click();
+  await page.getByRole("dialog", { name: "重命名会话" }).getByRole("textbox", { name: "会话名称" }).fill("  改名后的会话  ");
+  await page.getByRole("dialog", { name: "重命名会话" }).getByRole("button", { name: "保存" }).click();
+  await expect(page.getByRole("heading", { name: "改名后的会话" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "改名后的会话", exact: true })).toBeVisible();
+
+  const history = [{ id: "tool-1", run_id: "run-1", role: "tool_call", content: "", sequence: 1, status: "completed", created_at: "2026-01-01T00:00:00Z", tool_call_id: "call-1", tool_name: "search", arguments: { query: "产品" }, result: null, is_error: null, payload_truncated: false }, { id: "tool-2", run_id: "run-1", role: "tool_result", content: "结果", sequence: 2, status: "completed", created_at: "2026-01-01T00:00:01Z", tool_call_id: "call-1", tool_name: "search", arguments: null, result: { count: 1 }, is_error: false, payload_truncated: false }];
+  await page.route("**/api/v1/sessions/session-1/messages", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: history }) }));
+  await page.getByRole("button", { name: "会话操作：改名后的会话" }).click();
+  const pendingDownload = page.waitForEvent("download");
+  await page.getByRole("menuitem", { name: "导出会话" }).click();
+  const download = await pendingDownload;
+  expect(download.suggestedFilename()).toBe("agent-session-session-1.json");
+  const exported = JSON.parse(await readFile(await download.path(), "utf8")) as { session: typeof baseSession; messages: typeof history };
+  expect(exported.session.title).toBe("改名后的会话");
+  expect(exported.messages).toEqual(history);
+});
+
+test("session deletion requires confirmation and only removes the chosen session", async ({ page }) => {
+  const api = await mockApi(page, { extraSession: true }); await signIn(page);
+  await page.getByRole("button", { name: "测试会话", exact: true }).click();
+  await page.getByRole("button", { name: "会话操作：另一会话" }).click();
+  await page.getByRole("menuitem", { name: "删除会话" }).click();
+  await expect(page.getByRole("dialog", { name: "删除会话" })).toContainText("另一会话");
+  await page.getByRole("dialog", { name: "删除会话" }).getByRole("button", { name: "取消" }).click();
+  expect(api.deleteRequests()).toBe(0);
+  await page.getByRole("button", { name: "会话操作：另一会话" }).click();
+  await page.getByRole("menuitem", { name: "删除会话" }).click();
+  await page.getByRole("dialog", { name: "删除会话" }).getByRole("button", { name: "确认删除" }).click();
+  await expect(page.getByRole("button", { name: "另一会话", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "测试会话" })).toBeVisible();
+  expect(api.deleteRequests()).toBe(1);
+
+  await page.getByRole("button", { name: "会话操作：测试会话" }).click();
+  await page.getByRole("menuitem", { name: "删除会话" }).click();
+  await page.getByRole("dialog", { name: "删除会话" }).getByRole("button", { name: "确认删除" }).click();
+  await expect(page).toHaveURL(/\/chat$/);
+  expect(api.deleteRequests()).toBe(2);
+});
+
+test("a failed session deletion keeps the confirmation dialog and explains the error", async ({ page }) => {
+  const api = await mockApi(page, { deleteFailure: 409 }); await signIn(page);
+  await page.getByRole("button", { name: "会话操作：测试会话" }).click();
+  await page.getByRole("menuitem", { name: "删除会话" }).click();
+  await page.getByRole("dialog", { name: "删除会话" }).getByRole("button", { name: "确认删除" }).click();
+  await expect(page.getByRole("dialog", { name: "删除会话" })).toContainText("该会话正在执行任务");
+  await expect(page.getByRole("button", { name: "测试会话", exact: true })).toBeVisible();
+  expect(api.deleteRequests()).toBe(1);
 });
 
 test("retrieval results render for document and graph modes without blanking the workbench", async ({ page }) => {
