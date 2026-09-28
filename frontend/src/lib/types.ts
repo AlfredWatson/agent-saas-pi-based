@@ -11,6 +11,7 @@ export type AgentSession = {
   id: string; status: string; title: string | null; knowledge_base_ids: string[];
   workspace_id: string; profile_id: string | null; provider_binding_id: string | null;
   model_id: string | null; thinking_level: string | null; model_configured: boolean;
+  total_tokens: number; context_tokens: number;
   created_at: string; updated_at: string; latest_run: LatestRun | null;
 };
 export type ChatMessage = {

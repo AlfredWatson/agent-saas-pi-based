@@ -122,7 +122,7 @@ test("configures each model, isolates bindings, and keeps the old directory afte
 
 test("chat lists only ready models and local models have no thinking intensity", async () => {
   HTMLElement.prototype.scrollIntoView = vi.fn();
-  const session: AgentSession = { id: "session-1", status: "active", workspace_id: workspace.id, profile_id: null, provider_binding_id: "one", model_id: "ready-local", thinking_level: null, model_configured: true, knowledge_base_ids: [], title: "测试会话", latest_run: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" };
+  const session: AgentSession = { id: "session-1", status: "active", workspace_id: workspace.id, profile_id: null, provider_binding_id: "one", model_id: "ready-local", thinking_level: null, model_configured: true, knowledge_base_ids: [], title: "测试会话", total_tokens: 0, context_tokens: 0, latest_run: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" };
   vi.spyOn(api, "session").mockResolvedValue(session);
   vi.spyOn(api, "messages").mockResolvedValue({ items: [] });
   vi.spyOn(api, "availableModels").mockResolvedValue({ items: [

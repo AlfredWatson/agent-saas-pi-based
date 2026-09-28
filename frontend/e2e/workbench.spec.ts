@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 
 const workspace = { id: "workspace-1", name: "default", status: "active", is_current: true };
 const knowledgeBase = { id: "kb-1", workspace_id: "workspace-1", name: "产品文档", status: "active", version: 1, file_backend: "local", block_backend: "postgres", chunk_backend: "postgres", vector_backend: "pgvector", graph_backend: "postgres", concurrency: { parsing: 1, chunking: 1, embedding: 1, graph: 1 } };
-const baseSession = { id: "session-1", status: "active", title: "测试会话", knowledge_base_ids: [], workspace_id: "workspace-1", profile_id: null, provider_binding_id: "binding-1", model_id: "model-1", thinking_level: "medium", model_configured: true, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", latest_run: null };
+const baseSession = { id: "session-1", status: "active", title: "测试会话", knowledge_base_ids: [], workspace_id: "workspace-1", profile_id: null, provider_binding_id: "binding-1", model_id: "model-1", thinking_level: "medium", model_configured: true, total_tokens: 0, context_tokens: 0, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", latest_run: null };
 const document = { id: "document-uuid-1", original_filename: "用户手册.pdf", stored_filename: "safe-user-manual.pdf", status: "active", stages: { parsing: { status: "not_started", progress: 0 }, chunking: { status: "not_started", progress: 0 }, vectorization: { status: "not_started", progress: 0 }, graph: { status: "not_started", progress: 0 } } };
 
 async function mockApi(page: import("@playwright/test").Page, options: { extraSession?: boolean; deleteFailure?: number } = {}) {

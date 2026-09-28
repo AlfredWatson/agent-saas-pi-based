@@ -36,3 +36,11 @@ test("message_end preserves Pi assistant/tool-result order and excludes thinking
 	] } });
 	expect(toolResult).toMatchObject({ type: "message_end", message: { role: "tool_result", tool_call_id: "call-1", tool_name: "read", is_error: true, result: { output: "ok", token: "[REDACTED]" } } });
 });
+
+test("message_end reports output length without exposing other provider stop details", () => {
+	const redactor = createPayloadRedactor([]);
+	const message = { role: "assistant", stopReason: "length", content: [{ type: "text", text: "incomplete" }] };
+	expect(projectMessageEnd(message, new Map(), redactor)).toEqual({
+		type: "message_end", message: { role: "assistant", stop_reason: "length", content: [{ type: "text", content: "incomplete" }] },
+	});
+});

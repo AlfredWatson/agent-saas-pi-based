@@ -83,6 +83,7 @@ export function projectMessageEnd(message: unknown, completedTools: ReadonlyMap<
 	const item = message as Record<string, unknown>;
 	if (item.role === "assistant") {
 		const blocks = Array.isArray(item.content) ? item.content : [];
+		const stopReason = item.stopReason === "length" ? "length" : undefined;
 		const content = blocks.flatMap((block): Record<string, unknown>[] => {
 			if (typeof block !== "object" || block === null) return [];
 			const value = block as Record<string, unknown>;
@@ -91,7 +92,7 @@ export function projectMessageEnd(message: unknown, completedTools: ReadonlyMap<
 			const args = redactor.payload(value.arguments);
 			return [{ type: "tool_call", tool_call_id: String(value.id), tool_name: String(value.name), args: args.value, payload_truncated: args.payloadTruncated }];
 		});
-		return { type: "message_end", message: { role: "assistant", content } };
+		return { type: "message_end", message: { role: "assistant", content, ...(stopReason ? { stop_reason: stopReason } : {}) } };
 	}
 	if (item.role === "toolResult") {
 		const toolCallId = String(item.toolCallId ?? "");

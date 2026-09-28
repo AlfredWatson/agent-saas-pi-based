@@ -445,6 +445,7 @@ async def consume_run(
 ) -> None:
     """Continues after SSE disconnect; Pi ``message_end`` is the history order."""
     settled = False
+    output_truncated = False
     try:
         async with SessionLocal() as db:
             session = await db.scalar(
@@ -486,11 +487,14 @@ async def consume_run(
                     if public:
                         await publish(run_id, *public)
                 elif kind == "message_end":
+                    message = event.get("message")
+                    if isinstance(message, dict) and message.get("role") == "assistant":
+                        output_truncated = message.get("stop_reason") == "length"
                     sequence = await project_message_end(
                         db,
                         session_id,
                         run_id,
-                        event.get("message"),
+                        message,
                         sequence,
                         secret_values,
                     )
@@ -510,7 +514,9 @@ async def consume_run(
             if not settled:
                 raise RuntimeError("runtime_stream_ended_before_agent_settled")
             if run:
-                run.status, run.finished_at = "completed", datetime.now(UTC)
+                run.status = "failed" if output_truncated else "completed"
+                run.error = "output_token_limit" if output_truncated else None
+                run.finished_at = datetime.now(UTC)
             binding = await db.scalar(select(ProviderBinding).where(
                 ProviderBinding.id == session.provider_binding_id,
                 ProviderBinding.user_id == user_id,
@@ -518,7 +524,10 @@ async def consume_run(
             if binding and binding.verified_at is None:
                 binding.verified_at = datetime.now(UTC)
             await db.commit()
-            await publish(run_id, "message.completed", {})
+            if output_truncated:
+                await publish(run_id, "message.failed", {"error": "output_token_limit"})
+            else:
+                await publish(run_id, "message.completed", {})
     except Exception:
         async with SessionLocal() as db:
             run = await db.get(AgentRun, run_id)

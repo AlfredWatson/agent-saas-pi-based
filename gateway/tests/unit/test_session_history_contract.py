@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
-from app.api.v1.sessions import MessageInput, owned, project_message_end, public_compaction_event, public_tool_event, stream
+from app.api.v1.sessions import MessageInput, consume_run, owned, project_message_end, public_compaction_event, public_tool_event, stream
 
 
 class CapturingSession:
@@ -123,3 +123,61 @@ def test_public_compaction_events_keep_order_and_drop_private_fields():
     assert "private context" not in repr(projected)
     assert public_compaction_event({"type": "compaction_ended", "reason": "threshold", "status": "unknown"}) is None
     assert public_compaction_event({"type": "compaction_started", "reason": ["threshold"]}) is None
+
+
+@pytest.mark.parametrize(
+    ("assistant_stops", "expected_status", "expected_error"),
+    [(["length"], "failed", "output_token_limit"), (["length", None], "completed", None)],
+)
+def test_run_reports_only_terminal_output_limit(monkeypatch, assistant_stops, expected_status, expected_error):
+    session = SimpleNamespace(provider_binding_id=uuid4())
+    run = SimpleNamespace(status="running", error=None, finished_at=None)
+    binding = SimpleNamespace(verified_at=None)
+    published = []
+
+    class FakeDb:
+        def __init__(self):
+            self.results = iter([session, 0, binding])
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+        async def scalar(self, _query):
+            return next(self.results)
+
+        async def get(self, _model, _id):
+            return run
+
+        def add(self, _item):
+            pass
+
+        async def commit(self):
+            pass
+
+    class FakeRuntime:
+        async def ensure_session(self, *_args):
+            return {"pi_session_id": "pi-1", "session_file_key": "session.jsonl", "total_tokens": 0, "context_tokens": 0}
+
+        async def stream_chat(self, *_args):
+            for stop in assistant_stops:
+                yield {"type": "message_end", "message": {"role": "assistant", "content": [], "stop_reason": stop}}
+            yield {"type": "agent_settled"}
+
+    async def capture(_run_id, name, data):
+        published.append((name, data))
+
+    monkeypatch.setattr("app.api.v1.sessions.SessionLocal", FakeDb)
+    monkeypatch.setattr("app.api.v1.sessions.RuntimeClient", FakeRuntime)
+    monkeypatch.setattr("app.api.v1.sessions.runtime_payload", AsyncMock(return_value={"api_key": ""}))
+    monkeypatch.setattr("app.api.v1.sessions.publish", capture)
+    asyncio.run(consume_run(uuid4(), uuid4(), uuid4(), "hello"))
+
+    assert run.status == expected_status
+    assert run.error == expected_error
+    assert published[-2] == (
+        ("message.failed", {"error": "output_token_limit"})
+        if expected_error else ("message.completed", {})
+    )

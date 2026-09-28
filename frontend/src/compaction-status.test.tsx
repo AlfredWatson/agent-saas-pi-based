@@ -15,6 +15,7 @@ const session = {
   id: "session-1", status: "active", title: "测试会话", workspace_id: "workspace-1",
   profile_id: null, model_configured: true, knowledge_base_ids: [],
   provider_binding_id: "binding-1", model_id: "model-1", thinking_level: null,
+  total_tokens: 0, context_tokens: 0,
   created_at: "2026-09-24T00:00:00Z", updated_at: "2026-09-24T00:00:00Z", latest_run: null,
 } satisfies AgentSession;
 const workspace = { id: "workspace-1", name: "测试工作区" } as Workspace;
@@ -74,4 +75,18 @@ test("compaction status clears if the stream fails", async () => {
   expect(screen.queryByText("Agent 正在思考…")).toBeNull();
   await act(async () => fail(new Error("stream_failed")));
   expect(screen.queryByRole("status")).toBeNull();
+});
+
+test("a completed stream with an output limit reports the incomplete answer", async () => {
+  const truncated = { ...session, latest_run: {
+    id: "run-1", status: "failed", error: "output_token_limit",
+    started_at: "2026-09-28T07:23:59Z", finished_at: "2026-09-28T07:26:09Z",
+  } } satisfies AgentSession;
+  vi.spyOn(api, "session").mockResolvedValue(truncated);
+  vi.spyOn(api, "messages").mockResolvedValue({ items: [] });
+  vi.spyOn(api, "availableModels").mockResolvedValue({ items: [] });
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <ChatCenter workspace={workspace} selected={truncated} onOpenBindings={() => {}} />
+  </QueryClientProvider>);
+  expect((await screen.findByRole("alert")).textContent).toContain("最大输出 token");
 });
