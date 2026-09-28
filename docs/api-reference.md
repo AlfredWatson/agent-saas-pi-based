@@ -382,6 +382,7 @@ Session，此后可独立调整。
   "knowledge_base_ids":["<uuid>"],"workspace_id":"<workspace-uuid>",
   "profile_id":null,"provider_binding_id":"<binding-uuid>",
   "model_id":"faux-1","thinking_level":"high","model_configured":true,
+  "total_tokens":1234,"context_tokens":456,
   "created_at":"...","updated_at":"...",
   "latest_run":{"id":"<run-uuid>","status":"completed","error":null,
                 "started_at":"...","finished_at":"...",
@@ -391,6 +392,10 @@ Session，此后可独立调整。
 ```
 
 完整历史不包含在这里，应使用下一接口。
+`total_tokens` 是整个 Pi Session 原始消息的累计估算 token 数，`context_tokens` 是
+当前发送给模型的消息上下文估算 token 数；两者均不含系统提示词，也不代表模型计费量。
+新会话均为 0。压缩时累计值保持不变，当前值按摘要及保留消息重新计算；一次运行
+结束或失败后更新持久化快照。创建及其他返回完整 Session 对象的接口也包含这两个字段。
 
 ### `GET /sessions/{session_id}`
 

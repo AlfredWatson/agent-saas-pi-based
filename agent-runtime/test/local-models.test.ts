@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverLocalModels, localApiBase, localRuntimeProviderId } from "../src/local-models.js";
 import { localCompactionSettings } from "../src/sessions/local-compaction.js";
+import { sessionTokenStats } from "../src/sessions/token-stats.js";
+import type { ManagedSession } from "../src/sessions/session-registry.js";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; vi.restoreAllMocks(); });
@@ -110,7 +112,7 @@ test("local model usage triggers compaction before the context is exhausted", as
 		const usage = { id: String(calls), object: "chat.completion.chunk", created: 1, model: "small", choices: [], usage: { prompt_tokens: calls === 2 ? 850 : 100, completion_tokens: 20, total_tokens: calls === 2 ? 870 : 120 } };
 		return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: ${JSON.stringify(usage)}\n\ndata: [DONE]\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } });
 	}) as typeof globalThis.fetch;
-	let managed;
+	let managed: ManagedSession | undefined;
 	try {
 		managed = await createSession("tenant", "00000000-0000-0000-0000-000000000011", {
 			workspace_key: "ws", provider_id: "vllm", provider_binding_id: "00000000-0000-0000-0000-000000000011",
@@ -118,11 +120,18 @@ test("local model usage triggers compaction before the context is exhausted", as
 			local_model: { id: "small", name: "Small", context_window: 1024, max_tokens: 128, reasoning: false },
 		});
 		await managed.session.prompt("A".repeat(1500));
+		const sessionManager = managed.session.sessionManager;
+		const beforeSecondPrompt = sessionTokenStats(sessionManager);
+		expect(beforeSecondPrompt.total_tokens).toBe(beforeSecondPrompt.context_tokens);
 		const events: string[] = [];
 		const compactionSucceeded: boolean[] = [];
+		let beforeCompaction: ReturnType<typeof sessionTokenStats> | undefined;
+		let afterCompaction: ReturnType<typeof sessionTokenStats> | undefined;
 		const stop = managed.session.subscribe((event) => {
 			events.push(event.type);
+			if (event.type === "compaction_start") beforeCompaction = sessionTokenStats(sessionManager);
 			if (event.type === "compaction_end") compactionSucceeded.push(Boolean(event.result));
+			if (event.type === "compaction_end" && event.result) afterCompaction = sessionTokenStats(sessionManager);
 		});
 		await managed.session.prompt("B".repeat(1500));
 		stop();
@@ -130,6 +139,10 @@ test("local model usage triggers compaction before the context is exhausted", as
 		expect(events).toContain("compaction_start");
 		expect(events).toContain("compaction_end");
 		expect(compactionSucceeded).toEqual([true]);
+		expect(beforeCompaction).toBeDefined();
+		expect(afterCompaction).toBeDefined();
+		expect(afterCompaction!.total_tokens).toBe(beforeCompaction!.total_tokens);
+		expect(afterCompaction!.context_tokens).toBeLessThan(beforeCompaction!.context_tokens);
 	} finally {
 		managed?.session.dispose();
 		if (previousRoot === undefined) delete process.env.RUNTIME_DATA_ROOT;

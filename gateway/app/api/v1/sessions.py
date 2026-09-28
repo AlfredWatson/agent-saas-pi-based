@@ -115,7 +115,19 @@ def render_session(
         "created_at": session.created_at,
         "updated_at": session.updated_at,
         "latest_run": render_run(latest_run),
+        "total_tokens": session.total_tokens,
+        "context_tokens": session.context_tokens,
     }
+
+
+def read_token_snapshot(payload: object) -> tuple[int, int]:
+    """Accept only unsigned values representable by PostgreSQL BIGINT."""
+    if not isinstance(payload, dict):
+        raise ValueError("invalid_session_token_stats")
+    values = (payload.get("total_tokens"), payload.get("context_tokens"))
+    if any(type(value) is not int or value < 0 or value > 2**63 - 1 for value in values):
+        raise ValueError("invalid_session_token_stats")
+    return values
 
 
 async def session_details(
@@ -451,6 +463,8 @@ async def consume_run(
             )
             session.pi_session_id = ensured.get("pi_session_id")
             session.pi_session_file_key = ensured.get("session_file_key")
+            session.total_tokens, session.context_tokens = read_token_snapshot(ensured)
+            await db.commit()
             sequence = await db.scalar(
                 select(func.coalesce(func.max(ChatMessage.sequence), 0)).where(
                     ChatMessage.session_id == session_id
@@ -483,6 +497,9 @@ async def consume_run(
                     # This preserves completed calls/results even if a later Pi
                     # cycle fails.  The partial-running unique index prevents a
                     # competing Chat from interleaving sequence values.
+                    await db.commit()
+                elif kind == "token_snapshot":
+                    session.total_tokens, session.context_tokens = read_token_snapshot(event)
                     await db.commit()
                 elif kind == "agent_settled":
                     settled = True

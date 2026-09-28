@@ -42,6 +42,8 @@ def test_rendered_session_keeps_legacy_fields_and_exposes_ui_metadata():
             profile_id=profile_id,
             created_at="created",
             updated_at="updated",
+            total_tokens=12,
+            context_tokens=7,
         ),
         ["kb-b", "kb-a"],
         SimpleNamespace(
@@ -56,6 +58,8 @@ def test_rendered_session_keeps_legacy_fields_and_exposes_ui_metadata():
     assert rendered["knowledge_base_ids"] == ["kb-a", "kb-b"]
     assert rendered["workspace_id"] == str(workspace_id)
     assert rendered["profile_id"] == str(profile_id)
+    assert rendered["total_tokens"] == 12
+    assert rendered["context_tokens"] == 7
     assert rendered["latest_run"] == {
         "id": str(run_id),
         "status": "completed",
@@ -72,6 +76,7 @@ def test_rendered_session_exposes_workspace_model_configuration_and_run_snapshot
             id=uuid4(), status="ready", title=None, workspace_id=uuid4(), profile_id=None,
             provider_binding_id=binding_id, model_id="faux-1", thinking_level="low",
             created_at="created", updated_at="updated",
+            total_tokens=0, context_tokens=0,
         ),
         [],
         SimpleNamespace(
@@ -84,6 +89,16 @@ def test_rendered_session_exposes_workspace_model_configuration_and_run_snapshot
     assert rendered["model_configured"] is True
     assert rendered["latest_run"]["provider_id"] == "faux"
     assert rendered["latest_run"]["thinking_level"] == "low"
+
+
+def test_token_snapshot_rejects_invalid_or_out_of_range_values():
+    assert sessions.read_token_snapshot({"total_tokens": 0, "context_tokens": 0}) == (0, 0)
+    assert sessions.read_token_snapshot({"total_tokens": 2**63 - 1, "context_tokens": 1}) == (2**63 - 1, 1)
+    for value in (True, -1, 1.5, "3", 2**63):
+        with pytest.raises(ValueError, match="invalid_session_token_stats"):
+            sessions.read_token_snapshot({"total_tokens": value, "context_tokens": 0})
+    with pytest.raises(ValueError, match="invalid_session_token_stats"):
+        sessions.read_token_snapshot({"total_tokens": 1})
 
 
 def test_idle_session_delete_removes_projection_rows_without_runtime(monkeypatch):

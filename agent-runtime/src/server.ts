@@ -6,6 +6,7 @@ import { SessionRegistry } from "./sessions/session-registry.js";
 import { configureManagedSession, createSession, deleteSessionData, deleteWorkspaceData, ensureRuntimeHome, InvalidSessionFileKeyError, type SessionInput, type WorkspaceSessionFile } from "./sessions/session-factory.js";
 import { projectMessageEnd, type CompletedTool } from "./sessions/event-projection.js";
 import { projectCompactionEvent } from "./sessions/compaction-event.js";
+import { sessionTokenStats } from "./sessions/token-stats.js";
 import { fauxProvider, getSupportedThinkingLevels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { discoverLocalModels, LocalModelError } from "./local-models.js";
 import {
@@ -97,7 +98,7 @@ app.put<{ Params: { id: string }; Body: SessionInput }>("/internal/v1/sessions/:
 		if (error instanceof Error && error.message === "invalid_model") return reply.code(422).send({ error: "invalid_model" });
 		throw error;
 	}
-	return { pi_session_id: managed.session.sessionId, session_file_key: managed.sessionFile };
+	return { pi_session_id: managed.session.sessionId, session_file_key: managed.sessionFile, ...sessionTokenStats(managed.session.sessionManager) };
 });
 app.delete<{ Params: { workspaceKey: string }; Body: { sessions?: WorkspaceSessionFile[] } }>("/internal/v1/workspaces/:workspaceKey", async (request, reply) => {
 	if (!authenticated(request, reply)) return;
@@ -200,9 +201,15 @@ app.post<{ Params: { id: string }; Body: { content: string } }>("/internal/v1/se
 			const projected = projectMessageEnd(event.message, completedTools, managed.redactor);
 			if (projected) enqueue(projected);
 		}
-		if (event.type === "agent_settled") events.push(JSON.stringify({ type: "agent_settled" }));
+		if (event.type === "agent_settled") {
+			enqueue({ type: "token_snapshot", ...sessionTokenStats(managed.session.sessionManager) });
+			enqueue({ type: "agent_settled" });
+		}
 	});
-	void managed.session.prompt(request.body.content).catch((error: unknown) => events.push(JSON.stringify({ type: "error", error: "agent_failed" }))).finally(() => { managed.busy = false; unsubscribe(); });
+	void managed.session.prompt(request.body.content).catch((_error: unknown) => {
+		enqueue({ type: "token_snapshot", ...sessionTokenStats(managed.session.sessionManager) });
+		enqueue({ type: "error", error: "agent_failed" });
+	}).finally(() => { managed.busy = false; unsubscribe(); });
 	return reply.send(Readable.from((async function* () {
 		while (managed.busy || events.length > 0) {
 			const event = events.shift();

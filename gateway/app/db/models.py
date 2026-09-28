@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, LargeBinary, String, Text, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, LargeBinary, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy import MetaData
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -85,6 +85,10 @@ class AgentProfile(Timestamped, Base):
 
 class AgentSession(Timestamped, Base):
     __tablename__ = "agent_sessions"
+    __table_args__ = (
+        CheckConstraint("total_tokens >= 0", name="ck_agent_sessions_total_tokens_nonnegative"),
+        CheckConstraint("context_tokens >= 0", name="ck_agent_sessions_context_tokens_nonnegative"),
+    )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
     # Profiles are retained only as a legacy creation shortcut.  A Session owns
@@ -99,6 +103,8 @@ class AgentSession(Timestamped, Base):
     status: Mapped[str] = mapped_column(String(32), default="ready")
     title: Mapped[str | None] = mapped_column(String(256), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    context_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
 
 
 class AgentSessionKnowledgeBase(Base):
