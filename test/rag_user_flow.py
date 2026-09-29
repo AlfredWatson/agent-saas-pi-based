@@ -1166,6 +1166,41 @@ class UserFlow:
         )
 
         if self.reranker_enabled:
+            for mode in ("vector", "hybrid"):
+                skipped = self.json_request(
+                    "POST",
+                    f"{self.kb_root(self.primary_kb_id)}/retrieve",
+                    label=f"retrieve-{mode}-without-rerank",
+                    json={
+                        "query": "Unity Codely Agent 前期推进计划",
+                        "mode": mode,
+                        "top_k": 5,
+                        "rerank": False,
+                    },
+                )
+                require(
+                    skipped.get("items")
+                    and skipped.get("rerank")
+                    == {"configured": True, "applied": False, "error": None}
+                    and all(
+                        "retrieval_score" not in item
+                        for item in skipped.get("items", [])
+                    ),
+                    f"{mode} retrieval did not skip configured reranker: {skipped!r}",
+                )
+            retained_models = self.json_request(
+                "GET",
+                f"{self.kb_root(self.primary_kb_id)}/models",
+                label="list-models-after-skipped-rerank",
+            )
+            require(
+                any(
+                    item.get("kind") == "reranker"
+                    for item in retained_models.get("items", [])
+                    if isinstance(item, dict)
+                ),
+                "skipping rerank removed the knowledge-base model configuration",
+            )
             self.request(
                 "DELETE",
                 f"{self.kb_root(self.primary_kb_id)}/reranker-model",

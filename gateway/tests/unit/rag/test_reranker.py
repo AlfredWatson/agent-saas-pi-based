@@ -224,6 +224,103 @@ def test_reranked_items_preserve_retrieval_scores_and_degrade():
     }
 
 
+@pytest.mark.parametrize("mode", ["vector", "hybrid"])
+@pytest.mark.parametrize("rerank_value", [None, True, False])
+def test_retrieve_can_skip_configured_reranker_per_query(
+    monkeypatch, mode, rerank_value
+):
+    config = SimpleNamespace(fingerprint="fingerprint")
+    calls = {"config_reads": 0, "client_creations": 0, "reranks": 0}
+    rows = [
+        (
+            Document(
+                page_content="first", metadata={"chunk_id": "1", "document_id": "d"}
+            ),
+            0.2,
+        ),
+        (
+            Document(
+                page_content="second", metadata={"chunk_id": "2", "document_id": "d"}
+            ),
+            0.1,
+        ),
+    ]
+
+    async def reranker_config(*_args):
+        calls["config_reads"] += 1
+        return config
+
+    class Reranker:
+        async def rerank(self, *_args, **_kwargs):
+            calls["reranks"] += 1
+            return [RerankResult(index=1, score=0.9)]
+
+    def create_reranker(_config):
+        calls["client_creations"] += 1
+        return Reranker()
+
+    async def retrieve_rows(_db, knowledge_base_id, body, *, reranker, reranker_config):
+        assert reranker_config is config
+        return await retrieval._render_ranked_rows(
+            rows,
+            query=body.query,
+            top_k=body.top_k,
+            source=mode,
+            reranker=reranker,
+            reranker_config=reranker_config,
+            knowledge_base_id=knowledge_base_id,
+        )
+
+    monkeypatch.setattr(retrieval, "_reranker_config", reranker_config)
+    monkeypatch.setattr(retrieval, "input_from_stored", lambda _config: object())
+    monkeypatch.setattr(retrieval, "get_reranker", create_reranker)
+    monkeypatch.setattr(retrieval, f"{mode}_retrieve", retrieve_rows)
+    body = RetrievalInput(
+        query="question",
+        mode=mode,
+        top_k=1,
+        **({} if rerank_value is None else {"rerank": rerank_value}),
+    )
+    result = asyncio.run(retrieval.retrieve(None, uuid4(), body))
+
+    assert calls["config_reads"] == 1
+    assert (
+        calls["client_creations"]
+        == calls["reranks"]
+        == (0 if rerank_value is False else 1)
+    )
+    assert result["mode"] == mode
+    assert result["rerank"] == {
+        "configured": True,
+        "applied": rerank_value is not False,
+        "error": None,
+    }
+    assert result["items"][0]["chunk_id"] == ("1" if rerank_value is False else "2")
+    assert result["items"][0]["score"] == (0.2 if rerank_value is False else 0.9)
+    assert ("retrieval_score" in result["items"][0]) is (rerank_value is not False)
+
+
+@pytest.mark.parametrize("skip_rerank", [True, False])
+def test_empty_candidates_keep_configured_status(skip_rerank):
+    class Reranker:
+        async def rerank(self, *_args, **_kwargs):
+            raise AssertionError("empty candidates must not call the reranker")
+
+    items, status = asyncio.run(
+        retrieval._render_ranked_rows(
+            [],
+            query="question",
+            top_k=5,
+            source="vector",
+            reranker=None if skip_rerank else Reranker(),
+            reranker_config=SimpleNamespace(fingerprint="fingerprint"),
+            knowledge_base_id=uuid4(),
+        )
+    )
+    assert items == []
+    assert status == {"configured": True, "applied": False, "error": None}
+
+
 def test_vector_retrieve_passes_all_candidates_to_reranker(monkeypatch):
     rows = [
         (
@@ -349,6 +446,19 @@ def test_hybrid_retrieve_keeps_candidate_k_only_when_reranker_is_enabled(monkeyp
     assert len(no_rerank) == 2
     assert status == {"configured": False, "applied": False, "error": None}
 
+    skipped, skipped_status = asyncio.run(
+        retrieval.hybrid_retrieve(
+            Db(),
+            knowledge_base_id,
+            body,
+            reranker=None,
+            reranker_config=SimpleNamespace(fingerprint="fingerprint"),
+        )
+    )
+    assert skipped == no_rerank
+    assert skipped_status == {"configured": True, "applied": False, "error": None}
+    assert all("retrieval_score" not in item for item in skipped)
+
     _, reranked_status = asyncio.run(
         retrieval.hybrid_retrieve(
             Db(),
@@ -363,7 +473,8 @@ def test_hybrid_retrieve_keeps_candidate_k_only_when_reranker_is_enabled(monkeyp
     assert reranked_status["applied"] is True
 
 
-def test_graph_retrieval_never_reads_reranker_configuration(monkeypatch):
+@pytest.mark.parametrize("rerank", [True, False])
+def test_graph_retrieval_never_reads_reranker_configuration(monkeypatch, rerank):
     async def forbidden(*_args, **_kwargs):
         raise AssertionError("reranker configuration must not be queried for graph")
 
@@ -374,7 +485,7 @@ def test_graph_retrieval_never_reads_reranker_configuration(monkeypatch):
     monkeypatch.setattr(retrieval, "graph_retrieve", graph)
     result = asyncio.run(
         retrieval.retrieve(
-            None, uuid4(), RetrievalInput(query="question", mode="graph")
+            None, uuid4(), RetrievalInput(query="question", mode="graph", rerank=rerank)
         )
     )
     assert result == {"mode": "graph", "nodes": [], "edges": [], "evidence": []}

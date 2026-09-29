@@ -110,6 +110,17 @@ curl -fsS -X PUT "${RAG_BASE}/workspaces/${WORKSPACE_ID}/knowledge-bases/${KB_ID
 ```
 
 `GET .../knowledge-bases/{knowledge_base_id}/models` 会列出已配置的 `reranker`，但永不返回 API key。
+每次 `vector` 或 `hybrid` 检索可通过请求体的 `rerank` 布尔字段决定是否调用已配置的重排模型。
+省略该字段等同于 `true`，与原有调用行为一致。传 `false` 只跳过本次重排，不删除模型配置：
+
+```bash
+curl -fsS -X POST "${RAG_BASE}/workspaces/${WORKSPACE_ID}/knowledge-bases/${KB_ID}/retrieve" \
+  "${AUTH[@]}" -H 'Content-Type: application/json' \
+  --data '{"query":"示例问题","mode":"hybrid","top_k":5,"rerank":false}' | jq .
+```
+
+Workbench 检索实验台提供同样的单次查询开关；Agent `rag_search` 工具也接受可选的 `rerank` 参数。
+`graph` 检索忽略此参数。
 删除配置是幂等操作，即使原本没有配置也返回 `204`：
 
 ```bash
@@ -120,8 +131,8 @@ curl -fsS -o /dev/null -w '%{http_code}\n' -X DELETE \
 
 检索候选和结果的行为如下：
 
-- `vector` 先获得 `max(top_k, candidate_k)` 个向量候选，完成 PostgreSQL 回填、范围与 `min_score` 过滤后再重排。
-- `hybrid` 先以 RRF 融合向量和 BM25 候选。未配置重排时仍立即取 `top_k`；配置后保留
+- `vector` 先获得 `max(top_k, candidate_k)` 个向量候选，完成 PostgreSQL 回填、范围与 `min_score` 过滤；本次启用重排时再对候选重排。
+- `hybrid` 先以 RRF 融合向量和 BM25 候选。未配置或本次跳过重排时取 `top_k`；启用重排时保留
   `max(top_k, candidate_k)` 个融合候选，重排后再取 `top_k`。
 - 成功重排时，`item.score` 是重排分数，`item.retrieval_score` 保留原始向量或 RRF 分数；未配置或
   降级时维持原有 item 结构、分数和顺序。
@@ -132,7 +143,8 @@ vector/hybrid 响应会给出重排状态。例如成功时：
 {"rerank":{"configured":true,"applied":true,"error":null}}
 ```
 
-没有配置时为 `configured=false, applied=false`；候选为空时为 `configured=true, applied=false`。
+没有配置时为 `configured=false, applied=false`；候选为空或已配置但本次传 `rerank:false` 时为
+`configured=true, applied=false, error=null`。跳过重排时按原始分数与顺序返回，不包含 `retrieval_score`。
 运行时网络、超时、非成功响应或无效结果会安全降级到候选阶段原始排序的前 `top_k`，并返回
 `reranker_unavailable` 或 `invalid_reranker_response`。`graph` 响应保持原有结构，不包含 `rerank`。
 复制知识库会沿用已验证的模型配置（包括 reranker），不会重复探测。

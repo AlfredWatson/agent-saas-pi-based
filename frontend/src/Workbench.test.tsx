@@ -108,6 +108,7 @@ test("version publishing keeps the dialog open for duplicate names and copy fail
 test("successful retrieval renders the API's top-level document and graph results", async () => {
   const retrieve = vi.spyOn(api, "retrieve")
     .mockResolvedValueOnce({ mode: "hybrid", items: [{ document_id: "document-1", chunk_id: "chunk-1", score: 0.91, source: "vector", text: "检索命中的正文" }], rerank: { configured: false, applied: false, error: null } })
+    .mockResolvedValueOnce({ mode: "hybrid", items: [{ document_id: "document-1", chunk_id: "chunk-1", score: 0.83, source: "hybrid", text: "原始召回正文" }], rerank: { configured: true, applied: false, error: null } })
     .mockResolvedValueOnce({ mode: "graph", nodes: [{ id: "node-1", name: "产品" }], edges: [], evidence: [{ document_id: "document-1", chunk_id: "chunk-1", node_id: "node-1", edge_id: null }] });
   const workspace = { id: "workspace-1" } as Workspace;
   const kb = { id: "kb-1" } as KnowledgeBase;
@@ -117,13 +118,21 @@ test("successful retrieval renders the API's top-level document and graph result
   fireEvent.click(screen.getByRole("button", { name: "运行检索" }));
   await waitFor(() => expect(screen.getByText("检索命中的正文")).toBeTruthy());
   expect(screen.getByText("score 0.9100")).toBeTruthy();
+  expect(retrieve).toHaveBeenNthCalledWith(1, "workspace-1", "kb-1", expect.objectContaining({ rerank: true }));
+
+  fireEvent.click(screen.getByRole("checkbox", { name: "本次启用重排" }));
+  fireEvent.click(screen.getByRole("button", { name: "运行检索" }));
+  await waitFor(() => expect(screen.getByText("原始召回正文")).toBeTruthy());
+  expect(retrieve).toHaveBeenNthCalledWith(2, "workspace-1", "kb-1", expect.objectContaining({ rerank: false }));
+  expect(screen.getByText("重排：未应用")).toBeTruthy();
 
   fireEvent.change(screen.getByRole("combobox", { name: "模式" }), { target: { value: "graph" } });
+  expect(screen.queryByRole("checkbox", { name: "本次启用重排" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "运行检索" }));
   await waitFor(() => expect(screen.getByText("模式：graph")).toBeTruthy());
   expect(screen.getByText("节点 · entity")).toBeTruthy();
   expect(screen.getByText("来源：document-1 / chunk-1")).toBeTruthy();
-  expect(retrieve).toHaveBeenCalledTimes(2);
+  expect(retrieve).toHaveBeenCalledTimes(3);
 });
 
 const session = { id: "session-1", title: "测试会话", workspace_id: "workspace-1" } as AgentSession;

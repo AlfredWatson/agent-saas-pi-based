@@ -101,6 +101,7 @@ class GraphMergeInput(BaseModel):
 class RetrievalInput(BaseModel):
     query: str = Field(min_length=1, max_length=10000)
     mode: Literal["vector", "hybrid", "graph"] = "vector"
+    rerank: bool = True
     document_ids: list[UUID] | None = Field(default=None, max_length=100)
     top_k: int = Field(default=5, ge=1, le=100)
     candidate_k: int = Field(default=20, ge=1, le=500)

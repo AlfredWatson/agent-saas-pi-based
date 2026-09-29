@@ -106,7 +106,7 @@ async def _render_ranked_rows(
                 render_document(document, score, source)
                 for document, score in rows[:top_k]
             ],
-            _rerank_status(False, False),
+            _rerank_status(reranker_config is not None, False),
         )
     if not rows:
         return [], _rerank_status(True, False)
@@ -376,7 +376,7 @@ async def retrieve(db: AsyncSession, knowledge_base_id: UUID, body: RetrievalInp
     reranker_config = await _reranker_config(db, knowledge_base_id)
     reranker = (
         get_reranker(input_from_stored(reranker_config))
-        if reranker_config is not None
+        if body.rerank and reranker_config is not None
         else None
     )
     if body.mode == "vector":

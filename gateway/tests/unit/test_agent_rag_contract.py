@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from app.api.internal import rag as internal_rag
 from app.api.internal.rag import RuntimeRetrievalInput, authenticated_runtime_user
 from app.api.v1.sessions import SessionInput
 from app.db.models import AgentSessionKnowledgeBase
@@ -21,7 +22,10 @@ def test_session_contract_keeps_rag_binding_optional_and_bounded():
     ).knowledge_base_ids == [knowledge_base_id]
     with pytest.raises(ValueError, match="duplicate_knowledge_base_id"):
         SessionInput(profile_id=profile_id, knowledge_base_ids=[knowledge_base_id] * 2)
-    assert "knowledge_base_ids" in app.openapi()["components"]["schemas"]["SessionInput"]["properties"]
+    assert (
+        "knowledge_base_ids"
+        in app.openapi()["components"]["schemas"]["SessionInput"]["properties"]
+    )
 
 
 def test_internal_runtime_route_is_not_part_of_public_openapi():
@@ -34,10 +38,62 @@ def test_runtime_retrieval_defaults_to_bounded_hybrid_search():
     )
     assert payload.mode == "hybrid"
     assert payload.top_k == 5
+    assert payload.rerank is True
+    assert (
+        RuntimeRetrievalInput(
+            session_id=uuid4(),
+            knowledge_base_id=uuid4(),
+            query="question",
+            rerank=False,
+        ).rerank
+        is False
+    )
     with pytest.raises(ValueError):
         RuntimeRetrievalInput(
             session_id=uuid4(), knowledge_base_id=uuid4(), query="x", top_k=21
         )
+
+
+def test_runtime_retrieval_passes_rerank_choice_to_shared_retrieval(monkeypatch):
+    user = SimpleNamespace(id=uuid4())
+    knowledge_base_id = uuid4()
+    workspace_id = uuid4()
+    session_id = uuid4()
+    rows = [
+        SimpleNamespace(id=session_id, workspace_id=workspace_id),
+        SimpleNamespace(),
+        SimpleNamespace(id=knowledge_base_id, name="handbook"),
+    ]
+    captured = {}
+
+    class Db:
+        async def scalar(self, _statement):
+            return rows.pop(0)
+
+    async def retrieve(_db, kb_id, body):
+        captured["kb_id"] = kb_id
+        captured["rerank"] = body.rerank
+        return {
+            "mode": "hybrid",
+            "items": [],
+            "rerank": {"configured": True, "applied": False, "error": None},
+        }
+
+    monkeypatch.setattr(internal_rag, "retrieve", retrieve)
+    result = asyncio.run(
+        internal_rag.retrieve_for_runtime(
+            RuntimeRetrievalInput(
+                session_id=session_id,
+                knowledge_base_id=knowledge_base_id,
+                query="question",
+                rerank=False,
+            ),
+            user,
+            Db(),
+        )
+    )
+    assert captured == {"kb_id": knowledge_base_id, "rerank": False}
+    assert result["result"]["rerank"]["configured"] is True
 
 
 def test_session_kb_binding_has_cascade_foreign_keys():
@@ -71,7 +127,8 @@ def test_runtime_secret_authentication_is_tenant_scoped():
         assert user.id == tenant_id
         with pytest.raises(HTTPException) as error:
             await authenticated_runtime_user(
-                SimpleNamespace(scheme="Bearer", credentials="wrong"), tenant_id,
+                SimpleNamespace(scheme="Bearer", credentials="wrong"),
+                tenant_id,
                 Db(),
             )
         assert error.value.status_code == 401

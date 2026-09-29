@@ -24,7 +24,9 @@ from ...domain.rag.schemas import RetrievalInput
 from ...services.rag.retrieval import retrieve
 
 
-router = APIRouter(prefix="/internal/v1/runtime-rag", tags=["internal"], include_in_schema=False)
+router = APIRouter(
+    prefix="/internal/v1/runtime-rag", tags=["internal"], include_in_schema=False
+)
 bearer = HTTPBearer(auto_error=False)
 
 
@@ -33,6 +35,7 @@ class RuntimeRetrievalInput(BaseModel):
     knowledge_base_id: UUID
     query: str = Field(min_length=1, max_length=10_000)
     mode: str = Field(default="hybrid", pattern="^(vector|hybrid|graph)$")
+    rerank: bool = True
     document_ids: list[UUID] | None = Field(default=None, max_length=100)
     top_k: int = Field(default=5, ge=1, le=20)
 
@@ -111,6 +114,7 @@ async def retrieve_for_runtime(
             RetrievalInput(
                 query=body.query,
                 mode=body.mode,
+                rerank=body.rerank,
                 document_ids=body.document_ids,
                 top_k=body.top_k,
             ),

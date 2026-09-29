@@ -24,6 +24,7 @@ type RagSearchParams = {
 	knowledge_base_id: string;
 	query: string;
 	mode?: "vector" | "hybrid" | "graph";
+	rerank?: boolean;
 	document_ids?: string[];
 	top_k?: number;
 };
@@ -103,6 +104,7 @@ export function createRagSearchTool(config: RagToolConfig): ToolDefinition {
 			knowledge_base_id: Type.String({ pattern: UUID_PATTERN }),
 			query: Type.String({ minLength: 1, maxLength: 10_000 }),
 			mode: Type.Optional(Type.Union([Type.Literal("vector"), Type.Literal("hybrid"), Type.Literal("graph")])),
+			rerank: Type.Optional(Type.Boolean({ description: "Set false to skip reranking for this search; defaults to true." })),
 			document_ids: Type.Optional(Type.Array(Type.String({ pattern: UUID_PATTERN }), { maxItems: 100 })),
 			top_k: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
 		}),

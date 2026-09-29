@@ -48,6 +48,15 @@ def test_reranker_model_contract_only_allows_vllm():
     assert {"put", "delete"}.issubset(path)
 
 
+def test_public_retrieval_defaults_to_reranking_and_accepts_opt_out():
+    from app.domain.rag.schemas import RetrievalInput
+
+    assert RetrievalInput(query="question").rerank is True
+    assert RetrievalInput(query="question", rerank=False).rerank is False
+    schema = app.openapi()["components"]["schemas"]["RetrievalInput"]
+    assert schema["properties"]["rerank"]["type"] == "boolean"
+
+
 def test_knowledge_base_schema_exposes_all_supported_vector_backends():
     schema = app.openapi()["components"]["schemas"]["KnowledgeBaseCreate"]
     assert schema["properties"]["vector_backend"]["enum"] == [

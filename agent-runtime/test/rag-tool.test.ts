@@ -24,6 +24,7 @@ test("rag_search sends only fixed Session context and renders cited evidence", a
 		knowledge_base_id: config.knowledgeBases[0].id,
 		query: "which port is used",
 		mode: "hybrid",
+		rerank: false,
 	}, undefined, undefined, {} as never);
 
 	expect(fetch).toHaveBeenCalledOnce();
@@ -32,7 +33,7 @@ test("rag_search sends only fixed Session context and renders cited evidence", a
 		Authorization: "Bearer runtime-rag-secret",
 		"X-Tenant-ID": config.tenant,
 	});
-	expect(fetch.mock.calls[0][1].body).toContain(config.sessionId);
+	expect(JSON.parse(fetch.mock.calls[0][1].body)).toMatchObject({ session_id: config.sessionId, rerank: false });
 	expect(result.content[0]).toMatchObject({ type: "text" });
 	expect((result.content[0] as { text: string }).text).toContain("document_id=doc-1 chunk_id=chunk-1");
 });
