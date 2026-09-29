@@ -12,7 +12,15 @@ export type AgentSession = {
   workspace_id: string; profile_id: string | null; provider_binding_id: string | null;
   model_id: string | null; thinking_level: string | null; model_configured: boolean;
   total_tokens: number; context_tokens: number;
+  tools?: string[] | null; config_version?: number;
   created_at: string; updated_at: string; latest_run: LatestRun | null;
+};
+export type SubagentDefinition = { name: string; description: string; system_prompt: string; tools: string[] };
+export type AgentConfig = { tools: string[] | null; subagents: SubagentDefinition[]; config_version: number };
+export type SubagentSession = AgentSession & {
+  read_only: true; parent_session_id: string; parent_run_id: string;
+  parent_tool_call_id: string; task_index: number; task: string;
+  subagent: SubagentDefinition;
 };
 export type ChatMessage = {
   id: string; run_id: string | null; role: "user" | "assistant" | "tool_call" | "tool_result";

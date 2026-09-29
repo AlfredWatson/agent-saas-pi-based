@@ -185,6 +185,7 @@ async def list_workspace_sessions(
             .where(
                 AgentSession.workspace_id == workspace_id,
                 AgentSession.user_id == user.id,
+                AgentSession.parent_session_id.is_(None),
             )
             .order_by(AgentSession.created_at)
         )
@@ -348,8 +349,16 @@ async def delete_workspace(
         await db.execute(
             delete(ChatMessage).where(ChatMessage.session_id.in_(session_ids))
         )
-        await db.execute(delete(AgentRun).where(AgentRun.session_id.in_(session_ids)))
-        await db.execute(delete(AgentSession).where(AgentSession.id.in_(session_ids)))
+        child_ids = list((await db.scalars(select(AgentSession.id).where(
+            AgentSession.id.in_(session_ids), AgentSession.parent_session_id.is_not(None)
+        ))).all())
+        if child_ids:
+            await db.execute(delete(AgentRun).where(AgentRun.session_id.in_(child_ids)))
+            await db.execute(delete(AgentSession).where(AgentSession.id.in_(child_ids)))
+        child_set = set(child_ids)
+        parent_ids = [session_id for session_id in session_ids if session_id not in child_set]
+        await db.execute(delete(AgentRun).where(AgentRun.session_id.in_(parent_ids)))
+        await db.execute(delete(AgentSession).where(AgentSession.id.in_(parent_ids)))
     # Bindings are Workspace-owned.  Delete legacy Profiles first because they
     # retain a Binding foreign key even though the workbench no longer uses one.
     await db.execute(delete(AgentProfile).where(AgentProfile.workspace_id == workspace.id))

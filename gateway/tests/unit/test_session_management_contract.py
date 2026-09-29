@@ -113,6 +113,9 @@ def test_idle_session_delete_removes_projection_rows_without_runtime(monkeypatch
         async def scalar(self, _query):
             return None
 
+        async def scalars(self, _query):
+            return SimpleNamespace(all=lambda: [])
+
         async def execute(self, _query):
             self.executed += 1
 

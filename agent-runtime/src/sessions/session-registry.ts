@@ -11,6 +11,8 @@ export type ManagedSession = {
 	busy: boolean;
 	sessionFile: string;
 	redactor: PayloadRedactor;
+	configVersion: number;
+	isSubagent: boolean;
 };
 
 export class SessionRegistry {

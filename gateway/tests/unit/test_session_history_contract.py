@@ -66,6 +66,8 @@ def test_second_running_run_is_reported_as_session_busy_when_flush_fails(monkeyp
                 return SimpleNamespace(id=session_id, workspace_id=workspace_id)
             if self.scalar_calls == 2:
                 return SimpleNamespace(status="active")
+            if self.scalar_calls == 3:
+                return None  # no running parent or child Run
             return 3
 
         def add(self, _item) -> None:
@@ -130,7 +132,7 @@ def test_public_compaction_events_keep_order_and_drop_private_fields():
     [(["length"], "failed", "output_token_limit"), (["length", None], "completed", None)],
 )
 def test_run_reports_only_terminal_output_limit(monkeypatch, assistant_stops, expected_status, expected_error):
-    session = SimpleNamespace(provider_binding_id=uuid4())
+    session = SimpleNamespace(provider_binding_id=uuid4(), parent_session_id=None)
     run = SimpleNamespace(status="running", error=None, finished_at=None)
     binding = SimpleNamespace(verified_at=None)
     published = []
@@ -150,6 +152,12 @@ def test_run_reports_only_terminal_output_limit(monkeypatch, assistant_stops, ex
 
         async def get(self, _model, _id):
             return run
+
+        async def refresh(self, _item):
+            pass
+
+        async def scalars(self, _query):
+            return SimpleNamespace(all=lambda: [])
 
         def add(self, _item):
             pass

@@ -358,6 +358,53 @@ Runtime 使用独立的内部 storage key 作为目录名，公开 API 不返回
 Workspace 返回 `422 invalid_profile_or_workspace`。提供 Profile 时，模型配置会复制到
 Session，此后可独立调整。
 
+可选 `tools` 是工具名称白名单：`read`、`bash`、`edit`、`write`、`grep`、`find`、
+`ls`、`rag_search`、`call_subagents`。省略时兼容旧行为：四个默认 Pi 工具，以及绑定
+知识库时的 `rag_search`；显式空数组则不启用工具。选择 `rag_search` 必须绑定知识库。
+选择 `call_subagents` 时需同时提交 1–16 个 `subagents`，每项有 `name`、
+`description`、`system_prompt` 和 `tools`；子代理工具不得包含 `call_subagents`，
+子代理使用 `rag_search` 时也必须有主会话的知识库绑定。
+
+### `GET /sessions/{session_id}/agent-config` / `PUT /sessions/{session_id}/agent-config`
+
+读取或在会话空闲时整体替换工具及子代理定义。读取结果包含 `tools`、
+`subagents`、`config_version`；更新请求增加 `expected_config_version`，不匹配返回
+`409 session_config_conflict`，运行中返回 `409 session_busy`。知识库绑定不随此接口修改。
+
+```json
+{
+  "expected_config_version":1,
+  "tools":["read","rag_search","call_subagents"],
+  "subagents":[{
+    "name":"researcher","description":"检索与整理证据",
+    "system_prompt":"只报告可验证的事实。","tools":["read","rag_search"]
+  }]
+}
+```
+
+`call_subagents` 的一次调用接收 1–16 个 `{name,task}`，最多并行运行 4 个；每项
+独立返回子会话 ID、状态、最终答复或错误。单任务执行上限为 15 分钟。主 agent 的
+system prompt 包含子代理名称、描述和工具目录；完整子代理 system prompt 仅进入对应
+子会话。子会话共享主会话的 Workspace 文件与知识库授权，模型继承父 Run 当次配置。
+
+### `GET /sessions/{session_id}/subagents`
+
+列出主会话产生的子会话；支持 `limit`（默认 50，最多 100）和 `offset`。每项包含
+`parent_run_id`、`parent_tool_call_id`、`task_index`、任务、定义快照与最新 Run 状态。
+`GET /sessions/{session_id}/subagents/{child_id}` 返回单项详情；追加 `/messages`
+读取脱敏后的只读历史。普通会话列表不包含子会话，所有公开的子会话写入接口均拒绝。
+删除主会话时一并清理其子会话与 Pi 轨迹。
+
+真实模型的公开 HTTP 验收可复用 `.env` 中的 `AGENT_TEST_*` 配置。脚本会创建独立
+Workspace，结束后删除本次创建的会话、知识库和 Workspace：
+
+```bash
+gateway/.venv/bin/python test/subagent_user_flow.py
+gateway/.venv/bin/python test/subagent_user_flow.py --tasks 16
+gateway/.venv/bin/python test/subagent_user_flow.py --knowledge-base
+gateway/.venv/bin/python test/subagent_cancel_flow.py
+```
+
 ### `PUT /sessions/{session_id}/model-config`
 
 设置或更新该 Session 的模型配置，成功返回完整 Session 对象：

@@ -1,12 +1,13 @@
 import { mkdir, rm } from "node:fs/promises";
 import { basename, resolve } from "node:path";
-import { createAgentSession, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { config } from "../config.js";
 import { createRagSearchTool, type RagKnowledgeBase } from "../rag/rag-tool.js";
 import { createPayloadRedactor } from "./event-projection.js";
 import { guardLocalModelFetch, isLocalProvider, localApiBase, localRuntimeProviderId, type LocalModel } from "../local-models.js";
 import { localCompactionSettings } from "./local-compaction.js";
+import { createCallSubagentsTool, type SubagentDirectoryEntry } from "../subagents/call-subagents-tool.js";
 import type { ManagedSession } from "./session-registry.js";
 
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -33,7 +34,7 @@ function sessionFilePath(sessionFileKey: string, sessions: string): string {
 	return resolve(sessions, sessionFileKey);
 }
 
-export type SessionInput = { workspace_key: string; model_id: string; thinking_level?: string; api_key: string; provider_id: string; provider_binding_id?: string; base_url?: string; local_model?: LocalModel; session_file_key?: string; knowledge_bases?: RagKnowledgeBase[] };
+export type SessionInput = { workspace_key: string; model_id: string; thinking_level?: string; api_key: string; provider_id: string; provider_binding_id?: string; base_url?: string; local_model?: LocalModel; session_file_key?: string; knowledge_bases?: RagKnowledgeBase[]; tools?: string[]; subagents?: SubagentDirectoryEntry[]; subagent_system_prompt?: string | null; config_version?: number };
 export type WorkspaceSessionFile = { session_id: string; session_file_key?: string | null };
 
 async function installLocalProvider(modelRuntime: ModelRuntime, input: SessionInput): Promise<string> {
@@ -127,6 +128,33 @@ export async function createSession(tenant: string, sessionId: string, input: Se
 		: SessionManager.create(workspace, sessions);
 	const knowledgeBases = input.knowledge_bases ?? [];
 	if (knowledgeBases.length > 0 && (!config.gatewayBaseUrl || !config.ragSharedSecret)) throw new Error("rag_runtime_not_configured");
+	const selectedTools = input.tools ?? ["read", "bash", "edit", "write", ...(knowledgeBases.length ? ["rag_search"] : [])];
+	const mainAllowed = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "rag_search", "call_subagents"]);
+	if (selectedTools.some((tool) => !mainAllowed.has(tool)) || (input.subagent_system_prompt && selectedTools.includes("call_subagents"))) throw new Error("invalid_session_tools");
+	const directory = input.subagents ?? [];
+	if (selectedTools.includes("call_subagents") && (!directory.length || !config.gatewayBaseUrl || !config.ragSharedSecret)) throw new Error("invalid_session_tools");
+	const loader = new DefaultResourceLoader({
+		cwd: workspace, agentDir,
+		...(input.subagent_system_prompt ? { systemPromptOverride: () => input.subagent_system_prompt! } : {}),
+		...(!input.subagent_system_prompt && directory.length ? { appendSystemPromptOverride: (base: string[]) => [
+			...base,
+			`## Available subagents\n${directory.map((item) => `- ${item.name}: ${item.description}. Tools: ${item.tools.join(", ") || "none"}.`).join("\n")}\nUse call_subagents with the matching name and a specific task.`,
+		] } : {}),
+	});
+	await loader.reload();
+	const customTools = [];
+	if (selectedTools.includes("rag_search")) {
+		if (!knowledgeBases.length) throw new Error("invalid_session_tools");
+		customTools.push(createRagSearchTool({
+			baseUrl: config.gatewayBaseUrl!, secret: config.ragSharedSecret,
+			tenant, sessionId, knowledgeBases,
+			timeoutMs: config.ragRequestTimeoutMs, maxResultBytes: config.ragResultMaxBytes,
+		}));
+	}
+	if (selectedTools.includes("call_subagents")) customTools.push(createCallSubagentsTool({
+		baseUrl: config.gatewayBaseUrl!, secret: config.ragSharedSecret,
+		tenant, parentSessionId: sessionId, subagents: directory,
+	}));
 	const { session } = await createAgentSession({
 		cwd: workspace,
 		agentDir,
@@ -134,15 +162,9 @@ export async function createSession(tenant: string, sessionId: string, input: Se
 		modelRuntime,
 		model,
 		thinkingLevel: input.thinking_level as never,
-		customTools: knowledgeBases.length > 0 ? [createRagSearchTool({
-			baseUrl: config.gatewayBaseUrl!,
-			secret: config.ragSharedSecret,
-			tenant,
-			sessionId,
-			knowledgeBases,
-			timeoutMs: config.ragRequestTimeoutMs,
-			maxResultBytes: config.ragResultMaxBytes,
-		})] : [],
+		tools: selectedTools,
+		resourceLoader: loader,
+		customTools,
 	});
 	if (isLocalProvider(input.provider_id) && input.local_model) {
 		session.settingsManager.applyOverrides({ compaction: localCompactionSettings(input.local_model) });
@@ -159,5 +181,7 @@ export async function createSession(tenant: string, sessionId: string, input: Se
 		busy: false,
 		sessionFile,
 		redactor: createPayloadRedactor([config.sharedSecret, config.ragSharedSecret, input.api_key]),
+		configVersion: input.config_version ?? 1,
+		isSubagent: Boolean(input.subagent_system_prompt),
 	};
 }

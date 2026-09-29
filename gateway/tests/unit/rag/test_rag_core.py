@@ -248,4 +248,4 @@ def test_stage_handler_registry_is_explicit_and_extensible():
 
 
 def test_rag_migration_head_resolves_from_the_layered_module_location():
-    assert _migration_head() == "0011_local_agent_providers"
+    assert _migration_head() == "0013_subagents"

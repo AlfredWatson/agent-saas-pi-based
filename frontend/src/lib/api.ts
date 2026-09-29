@@ -1,8 +1,8 @@
 import { ApiError } from "./errors";
 import type {
-  AgentProfile, AgentSession, AuthToken, AvailableModel, ChatMessage, GraphArtifact, GraphDetail,
+  AgentConfig, AgentProfile, AgentSession, AuthToken, AvailableModel, ChatMessage, GraphArtifact, GraphDetail,
   DerivedEntry, DerivedEntryPage, KnowledgeBase, ProcessingJob, Provider, ProviderBinding, ProviderModel, RagOperation,
-  RagCapabilities, RagDocument, RagModel, RetrievalResult, RuntimeState, User, Workspace,
+  RagCapabilities, RagDocument, RagModel, RetrievalResult, RuntimeState, SubagentDefinition, SubagentSession, User, Workspace,
 } from "./types";
 
 const apiBase = (import.meta.env.VITE_API_BASE ?? "/api/v1").replace(/\/$/, "");
@@ -92,7 +92,12 @@ export const api = {
   recreateRuntime: () => request<RuntimeState>("/runtime:recreate", { method: "POST" }),
   sessions: () => request<{ items: AgentSession[] }>("/sessions"),
   session: (id: string) => request<AgentSession>(`/sessions/${id}`),
-  createSession: (body: { profile_id?: string; workspace_id: string; knowledge_base_ids: string[] }) => request<AgentSession>("/sessions", json(body)),
+  createSession: (body: { profile_id?: string; workspace_id: string; knowledge_base_ids: string[]; tools?: string[]; subagents?: SubagentDefinition[] }) => request<AgentSession>("/sessions", json(body)),
+  agentConfig: (id: string) => request<AgentConfig>(`/sessions/${id}/agent-config`),
+  updateAgentConfig: (id: string, body: Pick<AgentConfig, "tools" | "subagents"> & { expected_config_version: number }) => request<AgentSession>(`/sessions/${id}/agent-config`, putJson(body)),
+  subagentSessions: (id: string, limit = 50, offset = 0) => request<{ items: SubagentSession[] }>(`/sessions/${id}/subagents?limit=${limit}&offset=${offset}`),
+  subagentSession: (id: string, childId: string) => request<SubagentSession>(`/sessions/${id}/subagents/${childId}`),
+  subagentMessages: (id: string, childId: string) => request<{ items: ChatMessage[] }>(`/sessions/${id}/subagents/${childId}/messages`),
   setSessionModelConfig: (id: string, body: { provider_binding_id: string; model_id: string; thinking_level: string | null }) => request<AgentSession>(`/sessions/${id}/model-config`, putJson(body)),
   updateSessionTitle: (id: string, title: string) => request<AgentSession>(`/sessions/${id}`, { method: "PATCH", body: JSON.stringify({ title }) }),
   deleteSession: (id: string) => request<void>(`/sessions/${id}`, { method: "DELETE" }),

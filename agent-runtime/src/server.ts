@@ -78,6 +78,11 @@ app.get<{ Querystring: { provider_id?: string }; }>("/internal/v1/models", async
 app.put<{ Params: { id: string }; Body: SessionInput }>("/internal/v1/sessions/:id", async (request, reply) => {
 	const tenant = authenticated(request, reply); if (!tenant) return;
 	let managed = registry.get(request.params.id);
+	if (managed && managed.tenant === tenant && managed.configVersion !== (request.body.config_version ?? 1)) {
+		if (managed.busy) return reply.code(409).send({ error: "session_busy" });
+		registry.delete(request.params.id);
+		managed = undefined;
+	}
 	if (!managed) {
 		try {
 			managed = await createSession(tenant, request.params.id, request.body);
@@ -85,6 +90,7 @@ app.put<{ Params: { id: string }; Body: SessionInput }>("/internal/v1/sessions/:
 			if (error instanceof InvalidSessionFileKeyError) return reply.code(422).send({ error: "invalid_session_file_key" });
 			if (error instanceof LocalModelError) return reply.code(422).send({ error: error.message });
 			if (error instanceof Error && error.message === "invalid_model") return reply.code(422).send({ error: "invalid_model" });
+			if (error instanceof Error && error.message === "invalid_session_tools") return reply.code(422).send({ error: "invalid_session_tools" });
 			throw error;
 		}
 		registry.set(request.params.id, managed);
@@ -181,6 +187,11 @@ app.post<{ Params: { id: string }; Body: { content: string } }>("/internal/v1/se
 	const managed = registry.get(request.params.id); if (!managed || managed.tenant !== tenant) return reply.code(404).send({ error: "session_not_found" });
 	if (managed.busy) return reply.code(409).send({ error: "session_busy" });
 	managed.busy = true; reply.header("content-type", "application/x-ndjson");
+	let subagentTimedOut = false;
+	const subagentTimeout = managed.isSubagent ? setTimeout(() => {
+		subagentTimedOut = true;
+		void managed.session.abort().catch(() => undefined);
+	}, 900_000) : undefined;
 	const events: string[] = [];
 	const completedTools = new Map<string, CompletedTool>();
 	const enqueue = (event: Record<string, unknown>) => events.push(JSON.stringify(event));
@@ -203,13 +214,20 @@ app.post<{ Params: { id: string }; Body: { content: string } }>("/internal/v1/se
 		}
 		if (event.type === "agent_settled") {
 			enqueue({ type: "token_snapshot", ...sessionTokenStats(managed.session.sessionManager) });
-			enqueue({ type: "agent_settled" });
+			enqueue(subagentTimedOut ? { type: "error", error: "subagent_timeout" } : { type: "agent_settled" });
 		}
 	});
 	void managed.session.prompt(request.body.content).catch((_error: unknown) => {
 		enqueue({ type: "token_snapshot", ...sessionTokenStats(managed.session.sessionManager) });
-		enqueue({ type: "error", error: "agent_failed" });
-	}).finally(() => { managed.busy = false; unsubscribe(); });
+		enqueue({ type: "error", error: subagentTimedOut ? "subagent_timeout" : "agent_failed" });
+	}).finally(() => {
+		if (subagentTimeout) clearTimeout(subagentTimeout);
+		managed.busy = false;
+		unsubscribe();
+		if (managed.isSubagent) setTimeout(() => {
+			if (registry.get(request.params.id) === managed && !managed.busy) registry.delete(request.params.id);
+		}, 1000);
+	});
 	return reply.send(Readable.from((async function* () {
 		while (managed.busy || events.length > 0) {
 			const event = events.shift();

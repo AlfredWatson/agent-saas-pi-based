@@ -105,6 +105,23 @@ class AgentSession(Timestamped, Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     total_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
     context_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text("0"))
+    tools: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    config_version: Mapped[int] = mapped_column(nullable=False, server_default=text("1"))
+    parent_session_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("platform.agent_sessions.id"), nullable=True, index=True)
+    parent_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    parent_tool_call_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    task_index: Mapped[int | None] = mapped_column(nullable=True)
+    task_input: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subagent_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+class AgentSubagentDefinition(Base):
+    __tablename__ = "agent_subagent_definitions"
+    session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("platform.agent_sessions.id", ondelete="CASCADE"), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    description: Mapped[str] = mapped_column(String(500))
+    system_prompt: Mapped[str] = mapped_column(Text)
+    tools: Mapped[list] = mapped_column(JSONB)
 
 
 class AgentSessionKnowledgeBase(Base):

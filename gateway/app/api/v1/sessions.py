@@ -22,6 +22,7 @@ from ...db.models import (
     AgentRun,
     AgentSession,
     AgentSessionKnowledgeBase,
+    AgentSubagentDefinition,
     ChatMessage,
     ProviderBinding,
     User,
@@ -30,6 +31,7 @@ from ...db.models import (
 from ...db.rag.models import KnowledgeBase
 from ...db.session import SessionLocal, get_db
 from ...services.tool_payloads import safe_tool_content, safe_tool_payload
+from ...services.agent_tools import AgentConfigInput, effective_tools, validate_rag_binding
 from ...core.config import get_settings
 from .workspaces import current_workspace, enforce_workspace_storage_limit
 
@@ -37,7 +39,7 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 _subscribers: dict[UUID, set[asyncio.Queue[tuple[str, dict]]]] = {}
 
 
-class SessionInput(BaseModel):
+class SessionInput(AgentConfigInput):
     profile_id: UUID | None = None
     workspace_id: UUID | None = None
     knowledge_base_ids: list[UUID] = Field(default_factory=list, max_length=20)
@@ -64,11 +66,16 @@ class SessionModelConfigInput(BaseModel):
     thinking_level: str | None = Field(default=None, max_length=64)
 
 
+class AgentConfigUpdateInput(AgentConfigInput):
+    expected_config_version: int = Field(ge=1)
+
+
 async def owned(
     session_id: UUID, user: User, db: AsyncSession, *, lock: bool = False
 ) -> AgentSession:
     query = select(AgentSession).where(
-        AgentSession.id == session_id, AgentSession.user_id == user.id
+        AgentSession.id == session_id, AgentSession.user_id == user.id,
+        AgentSession.parent_session_id.is_(None),
     )
     if lock:
         query = query.with_for_update()
@@ -117,6 +124,8 @@ def render_session(
         "latest_run": render_run(latest_run),
         "total_tokens": session.total_tokens,
         "context_tokens": session.context_tokens,
+        "tools": getattr(session, "tools", None),
+        "config_version": getattr(session, "config_version", 1),
     }
 
 
@@ -163,6 +172,14 @@ async def session_details(
     for run in runs:
         latest_runs.setdefault(run.session_id, run)
     return knowledge_bases, latest_runs
+
+
+async def family_running_run(db: AsyncSession, session_id: UUID) -> UUID | None:
+    child_ids = select(AgentSession.id).where(AgentSession.parent_session_id == session_id)
+    return await db.scalar(select(AgentRun.id).where(
+        (AgentRun.session_id == session_id) | AgentRun.session_id.in_(child_ids),
+        AgentRun.status == "running",
+    ).limit(1))
 
 
 async def runtime_payload(
@@ -250,6 +267,15 @@ async def runtime_payload(
             {"id": str(knowledge_base_id), "name": name}
             for knowledge_base_id, name in knowledge_bases
         ],
+        "tools": effective_tools(session.tools, bool(knowledge_bases)),
+        "subagent_system_prompt": (session.subagent_snapshot or {}).get("system_prompt") if session.parent_session_id else None,
+        "subagents": [
+            {"name": item.name, "description": item.description, "tools": item.tools}
+            for item in (await db.scalars(select(AgentSubagentDefinition).where(
+                AgentSubagentDefinition.session_id == session.id
+            ).order_by(AgentSubagentDefinition.name))).all()
+        ] if session.parent_session_id is None else [],
+        "config_version": session.config_version,
     }
 
 
@@ -455,6 +481,9 @@ async def consume_run(
             )
             if not session:
                 return
+            active_run = await db.get(AgentRun, run_id)
+            if active_run is None or active_run.status == "cancelled":
+                return
             runtime = await runtime_payload(db, session, user_id)
             # Defense in depth: Runtime already redacts, but this boundary also
             # knows both credentials and must never persist them if it regresses.
@@ -466,54 +495,60 @@ async def consume_run(
             session.pi_session_file_key = ensured.get("session_file_key")
             session.total_tokens, session.context_tokens = read_token_snapshot(ensured)
             await db.commit()
+            await db.refresh(active_run)
+            if active_run.status == "cancelled":
+                return
             sequence = await db.scalar(
                 select(func.coalesce(func.max(ChatMessage.sequence), 0)).where(
                     ChatMessage.session_id == session_id
                 )
             )
-            async for event in RuntimeClient().stream_chat(
-                str(user_id), str(session_id), content
-            ):
-                kind = event.get("type")
-                if kind == "text_delta":
-                    delta = event.get("delta", "")
-                    await publish(run_id, "assistant.delta", {"delta": delta})
-                elif kind in {"tool_started", "tool_completed"}:
-                    public = public_tool_event(event, secret_values)
-                    if public:
-                        await publish(run_id, *public)
-                elif kind in {"compaction_started", "compaction_ended"}:
-                    public = public_compaction_event(event)
-                    if public:
-                        await publish(run_id, *public)
-                elif kind == "message_end":
-                    message = event.get("message")
-                    if isinstance(message, dict) and message.get("role") == "assistant":
-                        output_truncated = message.get("stop_reason") == "length"
-                    sequence = await project_message_end(
-                        db,
-                        session_id,
-                        run_id,
-                        message,
-                        sequence,
-                        secret_values,
-                    )
-                    # This preserves completed calls/results even if a later Pi
-                    # cycle fails.  The partial-running unique index prevents a
-                    # competing Chat from interleaving sequence values.
-                    await db.commit()
-                elif kind == "token_snapshot":
-                    session.total_tokens, session.context_tokens = read_token_snapshot(event)
-                    await db.commit()
-                elif kind == "agent_settled":
-                    settled = True
-                    break
-                elif kind == "error":
-                    raise RuntimeError("runtime_stream_failed")
+            async with asyncio.timeout(900 if session.parent_session_id else None):
+                async for event in RuntimeClient().stream_chat(
+                    str(user_id), str(session_id), content
+                ):
+                    kind = event.get("type")
+                    if kind == "text_delta":
+                        delta = event.get("delta", "")
+                        await publish(run_id, "assistant.delta", {"delta": delta})
+                    elif kind in {"tool_started", "tool_completed"}:
+                        public = public_tool_event(event, secret_values)
+                        if public:
+                            await publish(run_id, *public)
+                    elif kind in {"compaction_started", "compaction_ended"}:
+                        public = public_compaction_event(event)
+                        if public:
+                            await publish(run_id, *public)
+                    elif kind == "message_end":
+                        message = event.get("message")
+                        if isinstance(message, dict) and message.get("role") == "assistant":
+                            output_truncated = message.get("stop_reason") == "length"
+                        sequence = await project_message_end(
+                            db,
+                            session_id,
+                            run_id,
+                            message,
+                            sequence,
+                            secret_values,
+                        )
+                        # Persist completed calls even if a later Pi cycle fails.
+                        await db.commit()
+                    elif kind == "token_snapshot":
+                        session.total_tokens, session.context_tokens = read_token_snapshot(event)
+                        await db.commit()
+                    elif kind == "agent_settled":
+                        settled = True
+                        break
+                    elif kind == "error":
+                        if session.parent_session_id and event.get("error") == "subagent_timeout":
+                            raise TimeoutError("subagent_timeout")
+                        raise RuntimeError("runtime_stream_failed")
             run = await db.get(AgentRun, run_id)
             if not settled:
                 raise RuntimeError("runtime_stream_ended_before_agent_settled")
             if run:
+                await db.refresh(run)
+            if run and run.status != "cancelled":
                 run.status = "failed" if output_truncated else "completed"
                 run.error = "output_token_limit" if output_truncated else None
                 run.finished_at = datetime.now(UTC)
@@ -528,10 +563,21 @@ async def consume_run(
                 await publish(run_id, "message.failed", {"error": "output_token_limit"})
             else:
                 await publish(run_id, "message.completed", {})
+    except TimeoutError:
+        try:
+            await RuntimeClient().control(str(user_id), str(session_id), "abort")
+        except Exception:
+            pass
+        async with SessionLocal() as db:
+            run = await db.get(AgentRun, run_id)
+            if run and run.status != "cancelled":
+                run.status, run.error, run.finished_at = "failed", "subagent_timeout", datetime.now(UTC)
+                await db.commit()
+        await publish(run_id, "message.failed", {"error": "subagent_timeout"})
     except Exception:
         async with SessionLocal() as db:
             run = await db.get(AgentRun, run_id)
-            if run:
+            if run and run.status != "cancelled":
                 run.status, run.error, run.finished_at = (
                     "failed",
                     "runtime_stream_failed",
@@ -540,6 +586,25 @@ async def consume_run(
                 await db.commit()
         await publish(run_id, "message.failed", {"error": "runtime_stream_failed"})
     finally:
+        # A parent stream may end after batch creation but before the tool
+        # starts every queued child. Never leave those sessions executable.
+        async with SessionLocal() as db:
+            orphan_runs = list((await db.scalars(select(AgentRun).join(
+                AgentSession, AgentSession.id == AgentRun.session_id
+            ).where(
+                AgentSession.parent_run_id == run_id,
+                AgentRun.status.in_(["queued", "running"]),
+            ))).all())
+            running_children = [item.session_id for item in orphan_runs if item.status == "running"]
+            for item in orphan_runs:
+                item.status, item.error, item.finished_at = "cancelled", "parent_run_ended", datetime.now(UTC)
+            if orphan_runs:
+                await db.commit()
+        for child_id in running_children:
+            try:
+                await RuntimeClient().control(str(user_id), str(child_id), "abort")
+            except Exception:
+                pass
         await publish(run_id, "done", {})
 
 
@@ -572,6 +637,12 @@ async def create_session(
         raise HTTPException(422, "invalid_profile_or_workspace")
     if body.knowledge_base_ids and get_settings().runtime_gateway_base_url is None:
         raise HTTPException(409, "agent_rag_unavailable")
+    if body.tools is not None and "call_subagents" in body.tools and get_settings().runtime_gateway_base_url is None:
+        raise HTTPException(409, "agent_subagents_unavailable")
+    try:
+        validate_rag_binding(body, bool(body.knowledge_base_ids))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     knowledge_bases: list[KnowledgeBase] = []
     if body.knowledge_base_ids:
         knowledge_bases = list(
@@ -595,6 +666,7 @@ async def create_session(
         provider_binding_id=profile.provider_binding_id if profile else None,
         model_id=profile.model_id if profile else None,
         thinking_level=profile.thinking_level if profile else None,
+        tools=body.tools,
     )
     db.add(session)
     await db.flush()
@@ -604,6 +676,11 @@ async def create_session(
         )
         for knowledge_base_id in body.knowledge_base_ids
     )
+    if body.subagents:
+        db.add_all(AgentSubagentDefinition(
+            session_id=session.id, name=item.name, description=item.description,
+            system_prompt=item.system_prompt, tools=item.tools,
+        ) for item in body.subagents)
     await db.commit()
     # Runtime creation is lazy; this avoids passing a key until an actual chat.
     await db.refresh(session)
@@ -614,6 +691,58 @@ async def create_session(
     )
 
 
+@router.put("/{session_id}/agent-config")
+async def set_agent_config(
+    session_id: UUID,
+    body: AgentConfigUpdateInput,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    session = await owned(session_id, user, db, lock=True)
+    if session.config_version != body.expected_config_version:
+        raise HTTPException(409, "session_config_conflict")
+    if body.tools is not None and "call_subagents" in body.tools and get_settings().runtime_gateway_base_url is None:
+        raise HTTPException(409, "agent_subagents_unavailable")
+    running = await family_running_run(db, session.id)
+    if running is not None:
+        raise HTTPException(409, "session_busy")
+    has_kb = bool(await db.scalar(select(AgentSessionKnowledgeBase.session_id).where(
+        AgentSessionKnowledgeBase.session_id == session.id
+    ).limit(1)))
+    try:
+        validate_rag_binding(body, has_kb)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    session.tools = body.tools
+    session.config_version += 1
+    await db.execute(delete(AgentSubagentDefinition).where(AgentSubagentDefinition.session_id == session.id))
+    db.add_all(AgentSubagentDefinition(
+        session_id=session.id, name=item.name, description=item.description,
+        system_prompt=item.system_prompt, tools=item.tools,
+    ) for item in body.subagents)
+    await db.commit()
+    await db.refresh(session)
+    knowledge_bases, latest_runs = await session_details(db, [session])
+    return render_session(session, knowledge_bases[session.id], latest_runs.get(session.id))
+
+
+@router.get("/{session_id}/agent-config")
+async def get_agent_config(
+    session_id: UUID,
+    user: User = Depends(current_user), db: AsyncSession = Depends(get_db),
+):
+    session = await owned(session_id, user, db)
+    definitions = (await db.scalars(select(AgentSubagentDefinition).where(
+        AgentSubagentDefinition.session_id == session.id
+    ).order_by(AgentSubagentDefinition.name))).all()
+    return {
+        "tools": session.tools,
+        "config_version": session.config_version,
+        "subagents": [{"name": item.name, "description": item.description,
+                       "system_prompt": item.system_prompt, "tools": item.tools} for item in definitions],
+    }
+
+
 @router.put("/{session_id}/model-config")
 async def set_model_config(
     session_id: UUID,
@@ -622,9 +751,7 @@ async def set_model_config(
     db: AsyncSession = Depends(get_db),
 ):
     session = await owned(session_id, user, db, lock=True)
-    running = await db.scalar(select(AgentRun.id).where(
-        AgentRun.session_id == session.id, AgentRun.status == "running"
-    ).limit(1))
+    running = await family_running_run(db, session.id)
     if running is not None:
         raise HTTPException(409, "session_busy")
     await validate_model_config(db, user.id, session.workspace_id, body)
@@ -644,7 +771,7 @@ async def list_sessions(
     rows = (
         await db.scalars(
             select(AgentSession)
-            .where(AgentSession.user_id == user.id)
+            .where(AgentSession.user_id == user.id, AgentSession.parent_session_id.is_(None))
             .order_by(AgentSession.updated_at.desc(), AgentSession.id.desc())
         )
     ).all()
@@ -697,23 +824,35 @@ async def delete_session(
     db: AsyncSession = Depends(get_db),
 ):
     session = await owned(session_id, user, db, lock=True)
+    children = list((await db.scalars(select(AgentSession).where(
+        AgentSession.parent_session_id == session.id,
+        AgentSession.user_id == user.id,
+    ).order_by(AgentSession.created_at, AgentSession.id))).all())
     running = await db.scalar(
         select(AgentRun.id)
-        .where(AgentRun.session_id == session.id, AgentRun.status == "running")
+        .where(AgentRun.session_id.in_([session.id, *(child.id for child in children)]), AgentRun.status == "running")
         .limit(1)
     )
     if running is not None:
         raise HTTPException(409, "session_busy")
     # A lazy Session that has never streamed has no Runtime data to clean.
-    if session.pi_session_file_key:
-        try:
-            await RuntimeClient().delete_session(
-                str(user.id), str(session.id), session.pi_session_file_key
-            )
-        except RuntimeSessionBusyError as exc:
-            raise HTTPException(409, "session_busy") from exc
-        except RuntimeUnavailableError as exc:
-            raise HTTPException(503, "session_delete_incomplete") from exc
+    for owned_session in [*children, session]:
+        if owned_session.pi_session_file_key:
+            try:
+                await RuntimeClient().delete_session(
+                    str(user.id), str(owned_session.id), owned_session.pi_session_file_key
+                )
+            except RuntimeSessionBusyError as exc:
+                raise HTTPException(409, "session_busy") from exc
+            except RuntimeUnavailableError as exc:
+                raise HTTPException(503, "session_delete_incomplete") from exc
+    for child in children:
+        await db.execute(delete(ChatMessage).where(ChatMessage.session_id == child.id))
+        await db.execute(delete(AgentRun).where(AgentRun.session_id == child.id))
+        await db.execute(delete(AgentSessionKnowledgeBase).where(AgentSessionKnowledgeBase.session_id == child.id))
+        await db.delete(child)
+    if children:
+        await db.flush()
     await db.execute(delete(ChatMessage).where(ChatMessage.session_id == session.id))
     await db.execute(delete(AgentRun).where(AgentRun.session_id == session.id))
     await db.execute(
@@ -726,6 +865,81 @@ async def delete_session(
     return None
 
 
+def render_child(session: AgentSession, run: AgentRun | None, knowledge_base_ids: list[str]) -> dict:
+    return {
+        **render_session(session, knowledge_base_ids, run),
+        "read_only": True,
+        "parent_session_id": str(session.parent_session_id),
+        "parent_run_id": str(session.parent_run_id),
+        "parent_tool_call_id": session.parent_tool_call_id,
+        "task_index": session.task_index,
+        "task": session.task_input,
+        "subagent": session.subagent_snapshot,
+    }
+
+
+async def owned_child(parent_id: UUID, child_id: UUID, user: User, db: AsyncSession) -> AgentSession:
+    await owned(parent_id, user, db)
+    child = await db.scalar(select(AgentSession).where(
+        AgentSession.id == child_id, AgentSession.parent_session_id == parent_id,
+        AgentSession.user_id == user.id,
+    ))
+    if child is None:
+        raise HTTPException(404, "session_not_found")
+    return child
+
+
+@router.get("/{session_id}/subagents")
+async def list_subagent_sessions(
+    session_id: UUID,
+    limit: int = 50,
+    offset: int = 0,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await owned(session_id, user, db)
+    if limit < 1 or limit > 100 or offset < 0:
+        raise HTTPException(422, "invalid_pagination")
+    rows = list((await db.scalars(select(AgentSession).where(
+        AgentSession.parent_session_id == session_id,
+        AgentSession.user_id == user.id,
+    ).order_by(AgentSession.created_at.desc(), AgentSession.id.desc()).offset(offset).limit(limit))).all())
+    knowledge_bases, runs = await session_details(db, rows)
+    return {"items": [render_child(row, runs.get(row.id), knowledge_bases[row.id]) for row in rows]}
+
+
+@router.get("/{session_id}/subagents/{child_id}")
+async def get_subagent_session(
+    session_id: UUID, child_id: UUID,
+    user: User = Depends(current_user), db: AsyncSession = Depends(get_db),
+):
+    child = await owned_child(session_id, child_id, user, db)
+    knowledge_bases, runs = await session_details(db, [child])
+    return render_child(child, runs.get(child.id), knowledge_bases[child.id])
+
+
+@router.get("/{session_id}/subagents/{child_id}/messages")
+async def get_subagent_messages(
+    session_id: UUID, child_id: UUID,
+    user: User = Depends(current_user), db: AsyncSession = Depends(get_db),
+):
+    await owned_child(session_id, child_id, user, db)
+    return await messages_for_session(child_id, db)
+
+
+async def messages_for_session(session_id: UUID, db: AsyncSession) -> dict:
+    rows = (await db.scalars(select(ChatMessage).where(
+        ChatMessage.session_id == session_id
+    ).order_by(ChatMessage.sequence))).all()
+    return {"items": [dict(
+        id=str(x.id), run_id=str(x.run_id) if x.run_id else None,
+        role=x.role, content=x.content, sequence=x.sequence, status=x.status,
+        created_at=x.created_at, tool_call_id=x.tool_call_id, tool_name=x.tool_name,
+        arguments=x.arguments, result=x.result, is_error=x.is_error,
+        payload_truncated=x.payload_truncated,
+    ) for x in rows]}
+
+
 @router.get("/{session_id}/messages")
 async def messages(
     session_id: UUID,
@@ -733,33 +947,7 @@ async def messages(
     db: AsyncSession = Depends(get_db),
 ):
     await owned(session_id, user, db)
-    rows = (
-        await db.scalars(
-            select(ChatMessage)
-            .where(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.sequence)
-        )
-    ).all()
-    return {
-        "items": [
-            {
-                "id": str(x.id),
-                "run_id": str(x.run_id) if x.run_id else None,
-                "role": x.role,
-                "content": x.content,
-                "sequence": x.sequence,
-                "status": x.status,
-                "created_at": x.created_at,
-                "tool_call_id": x.tool_call_id,
-                "tool_name": x.tool_name,
-                "arguments": x.arguments,
-                "result": x.result,
-                "is_error": x.is_error,
-                "payload_truncated": x.payload_truncated,
-            }
-            for x in rows
-        ]
-    }
+    return await messages_for_session(session_id, db)
 
 
 @router.post("/{session_id}/messages:stream")
@@ -769,7 +957,7 @@ async def stream(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    session = await owned(session_id, user, db)
+    session = await owned(session_id, user, db, lock=True)
     workspace = await db.scalar(
         select(Workspace)
         .where(Workspace.id == session.workspace_id, Workspace.user_id == user.id)
@@ -777,6 +965,8 @@ async def stream(
     )
     if workspace is None or workspace.status != "active":
         raise HTTPException(409, "workspace_unavailable")
+    if await family_running_run(db, session.id):
+        raise HTTPException(409, "session_busy")
     await enforce_workspace_storage_limit(user.id)
     # Real ORM Sessions always expose these fields.  Keeping the legacy test
     # double path avoids coupling the run-uniqueness contract to Runtime I/O.

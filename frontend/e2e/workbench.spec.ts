@@ -100,13 +100,13 @@ test("binding name is required and an in-use binding stays visible until its ses
   await page.getByRole("dialog").getByRole("button", { name: "关闭" }).click();
   await page.getByTitle("删除 测试 Binding").click();
   await expect(page.getByText("仍有会话正在使用该 Provider Binding，请先切换这些会话的模型。")).toBeVisible();
-  await expect(page.getByText("测试 Binding", { exact: true })).toBeVisible();
+  await expect(page.getByTitle("删除 测试 Binding")).toBeVisible();
   await page.getByText("测试会话", { exact: true }).click();
   await page.getByLabel("选择模型").click();
   await page.getByText("GPT Alternate", { exact: true }).click();
   await page.getByRole("button", { name: "Provider Bindings", exact: true }).click();
   await page.getByTitle("删除 测试 Binding").click();
-  await expect(page.getByText("测试 Binding", { exact: true })).toHaveCount(0);
+  await expect(page.getByTitle("删除 测试 Binding")).toHaveCount(0);
 });
 
 test("knowledge settings and chat composer expose the requested controls", async ({ page }) => {
@@ -214,4 +214,80 @@ test("retrieval results render for document and graph modes without blanking the
   await expect(page.getByText("来源：document-uuid-1 / chunk-1")).toBeVisible();
   await expect(page.getByRole("button", { name: "检索实验" })).toBeVisible();
   expect(pageErrors).toEqual([]);
+});
+
+test("new chat presets a subagent and the right rail shows its read-only trace", async ({ page }) => {
+  await mockApi(page);
+  const preset = {
+    name: "generalist", description: "处理主 Agent 委派的独立任务",
+    system_prompt: "你是主 Agent 委派的通用子代理。仅完成收到的任务，必要时使用可用工具，并清楚报告结果及依据。",
+    tools: ["read", "bash", "edit", "write", "rag_search"],
+  };
+  const tools = [...preset.tools, "call_subagents"];
+  let created = false;
+  let createdBody: Record<string, unknown> | null = null;
+  let config = { tools, subagents: [preset], config_version: 1 };
+  let updatedBody: Record<string, unknown> | null = null;
+  let childStatus = "queued";
+  const newSession = () => ({ ...baseSession, id: "session-3", title: "Subagent 会话", knowledge_base_ids: ["kb-1"], tools, config_version: config.config_version });
+  const child = () => ({ ...newSession(), id: "child-1", title: null, tools: preset.tools, read_only: true,
+    parent_session_id: "session-3", parent_run_id: "run-3", parent_tool_call_id: "call-3", task_index: 0,
+    task: "检查手册", subagent: preset,
+    latest_run: { id: "child-run-1", status: childStatus, error: null, started_at: "2026-01-01T00:00:00Z", finished_at: childStatus === "completed" ? "2026-01-01T00:00:10Z" : null } });
+  await page.route("**/api/v1/sessions**", async (route) => {
+    const path = new URL(route.request().url()).pathname; const method = route.request().method();
+    const json = (body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    if (path.endsWith("/sessions") && method === "POST") {
+      createdBody = route.request().postDataJSON() as Record<string, unknown>;
+      created = true;
+      return json(newSession(), 201);
+    }
+    if (path.endsWith("/sessions") && method === "GET") return json({ items: created ? [baseSession, newSession()] : [baseSession] });
+    if (path.endsWith("/sessions/session-3/agent-config")) {
+      if (method === "PUT") {
+        updatedBody = route.request().postDataJSON() as Record<string, unknown>;
+        config = { tools, subagents: (updatedBody.subagents as typeof preset[]), config_version: 2 };
+        return json(newSession());
+      }
+      return json(config);
+    }
+    if (path.endsWith("/sessions/session-3/subagents/child-1/messages")) return json({ items: [
+      { id: "child-message-1", run_id: "child-run-1", role: "user", content: "检查手册", sequence: 1, status: "completed", created_at: "2026-01-01T00:00:00Z", tool_call_id: null, tool_name: null, arguments: null, result: null, is_error: null, payload_truncated: false },
+      { id: "child-message-2", run_id: "child-run-1", role: "assistant", content: "已检查手册", sequence: 2, status: "completed", created_at: "2026-01-01T00:00:10Z", tool_call_id: null, tool_name: null, arguments: null, result: null, is_error: null, payload_truncated: false },
+    ] });
+    if (path.endsWith("/sessions/session-3/subagents/child-1")) return json(child());
+    if (path.endsWith("/sessions/session-3/subagents")) return json({ items: [child()] });
+    if (path.endsWith("/sessions/session-3/messages")) return json({ items: [
+      { id: "parent-tool-1", run_id: "run-3", role: "tool_call", content: "", sequence: 1, status: "completed", created_at: "2026-01-01T00:00:00Z", tool_call_id: "call-3", tool_name: "call_subagents", arguments: { tasks: [{ name: "generalist", task: "检查手册" }] }, result: null, is_error: null, payload_truncated: false },
+    ] });
+    if (path.endsWith("/sessions/session-3")) return json(newSession());
+    return route.fallback();
+  });
+  await signIn(page);
+  await page.getByTitle("新聊天").click();
+  const dialog = page.getByRole("dialog", { name: "新聊天" });
+  await dialog.getByRole("checkbox", { name: "产品文档" }).check();
+  await dialog.getByRole("checkbox", { name: "启用 call_subagents 工具" }).check();
+  await dialog.getByRole("button", { name: "创建聊天" }).click();
+  await expect(page.getByRole("heading", { name: "Subagent 会话" })).toBeVisible();
+  expect(createdBody).toEqual({ workspace_id: "workspace-1", knowledge_base_ids: ["kb-1"], tools, subagents: [preset] });
+  await page.getByRole("button", { name: "Subagent", exact: true }).click();
+  await expect(page.getByRole("button", { name: /#1 generalist.*排队中.*检查手册/ })).toBeVisible();
+  childStatus = "completed";
+  await expect(page.getByRole("button", { name: /#1 generalist.*已完成.*检查手册/ })).toBeVisible({ timeout: 7_000 });
+  await page.getByRole("button", { name: "定义设置" }).click();
+  await page.getByRole("textbox", { name: "Subagent 1 描述" }).fill("审阅文件与知识库");
+  await page.getByRole("button", { name: "保存配置" }).click();
+  await expect(page.getByText(/配置已保存/)).toBeVisible();
+  expect(updatedBody).toEqual({ tools, subagents: [{ ...preset, description: "审阅文件与知识库" }], expected_config_version: 1 });
+  await page.getByRole("button", { name: "任务轨迹" }).click();
+  await page.getByRole("button", { name: /#1 generalist.*已完成.*检查手册/ }).click();
+  const trace = page.getByLabel("Subagent 只读轨迹");
+  await expect(trace.getByText("已检查手册")).toBeVisible();
+  await expect(trace.getByRole("textbox")).toHaveCount(0);
+  await page.locator("details").filter({ has: page.locator("summary", { hasText: "call_subagents" }) }).first().locator("summary").click();
+  await page.getByRole("button", { name: "查看 Subagent 轨迹" }).click();
+  await expect(trace.getByText("已检查手册")).toBeVisible();
+  await page.getByRole("button", { name: "测试会话", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Subagent", exact: true })).toHaveCount(0);
 });

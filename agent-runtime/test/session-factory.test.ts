@@ -29,8 +29,9 @@ test("Faux sessions use stable tenant-agnostic data paths and Pi default coding 
 	await expect(access(join(root, "workspaces", "workspace"))).resolves.toBeUndefined();
 	await expect(access(join(root, "tenants", "00000000-0000-0000-0000-000000000001"))).rejects.toThrow();
 
-	const resumed = await createSession("00000000-0000-0000-0000-000000000001", sessionId, { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", session_file_key: managed.sessionFile });
+	const resumed = await createSession("00000000-0000-0000-0000-000000000001", sessionId, { workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", session_file_key: managed.sessionFile, tools: ["read"], config_version: 2 });
 	expect(resumed.sessionFile).toBe(managed.sessionFile);
+	expect(resumed.session.agent.state.tools.map((tool) => tool.name)).toEqual(["read"]);
 	resumed.session.dispose();
 	await deleteSessionData(managed.sessionFile);
 	await expect(access(join(root, "sessions", managed.sessionFile))).rejects.toThrow();
@@ -69,4 +70,65 @@ test("Faux sessions use stable tenant-agnostic data paths and Pi default coding 
 	await expect(uploadWorkspaceFile("workspace", "linked/escape/outside.txt", content("blocked"), false)).rejects.toBeInstanceOf(UnsupportedWorkspaceFileTypeError);
 	await expect(downloadWorkspaceFile("workspace", "linked/escape/keep.txt")).rejects.toBeInstanceOf(UnsupportedWorkspaceFileTypeError);
 	await expect(downloadWorkspaceFile("workspace", "missing.txt")).rejects.toBeInstanceOf(WorkspaceFileNotFoundError);
+});
+
+test("Subagent Pi sessions use their own prompt and explicit tool allowlist", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-saas-child-")); roots.push(root);
+	const { config } = await import("../src/config.js");
+	const previousRoot = config.dataRoot;
+	config.dataRoot = root;
+	try {
+		const { createSession, ensureRuntimeHome } = await import("../src/sessions/session-factory.js");
+		await ensureRuntimeHome();
+		const managed = await createSession("tenant", "child", {
+			workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1",
+			tools: ["read"], subagent_system_prompt: "You are the configured research subagent.", config_version: 2,
+		});
+		expect(managed.session.agent.state.tools.map((item) => item.name)).toEqual(["read"]);
+		expect(managed.session.systemPrompt).toContain("You are the configured research subagent.");
+		expect(managed.configVersion).toBe(2);
+		managed.session.dispose();
+	} finally {
+		config.dataRoot = previousRoot;
+	}
+});
+
+test("Explicit Pi tool selection supports the complete seven-tool catalog", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-saas-tools-")); roots.push(root);
+	const { config } = await import("../src/config.js");
+	const previousRoot = config.dataRoot;
+	config.dataRoot = root;
+	try {
+		const { createSession } = await import("../src/sessions/session-factory.js");
+		const names = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+		const managed = await createSession("tenant", "all-tools", {
+			workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1", tools: names,
+		});
+		expect(managed.session.agent.state.tools.map((item) => item.name).sort()).toEqual([...names].sort());
+		managed.session.dispose();
+	} finally {
+		config.dataRoot = previousRoot;
+	}
+});
+
+test("Main Pi session exposes only the selected delegation tool and a concise directory", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-saas-parent-")); roots.push(root);
+	const { config } = await import("../src/config.js");
+	const previous = { dataRoot: config.dataRoot, gatewayBaseUrl: config.gatewayBaseUrl, ragSharedSecret: config.ragSharedSecret };
+	config.dataRoot = root;
+	config.gatewayBaseUrl = "http://gateway";
+	config.ragSharedSecret = "secret";
+	try {
+		const { createSession, ensureRuntimeHome } = await import("../src/sessions/session-factory.js");
+		await ensureRuntimeHome();
+		const managed = await createSession("tenant", "parent", {
+			workspace_key: "workspace", provider_id: "faux", api_key: "unused", model_id: "faux-1",
+			tools: ["call_subagents"], subagents: [{ name: "researcher", description: "Find evidence", tools: ["read"] }],
+		});
+		expect(managed.session.agent.state.tools.map((item) => item.name)).toEqual(["call_subagents"]);
+		expect(managed.session.systemPrompt).toContain("researcher: Find evidence. Tools: read");
+		managed.session.dispose();
+	} finally {
+		Object.assign(config, previous);
+	}
 });
