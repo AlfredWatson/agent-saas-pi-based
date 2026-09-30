@@ -1,6 +1,0 @@
-# Offline repair for images built from owner-only (0600) source files.
-# Build this from the repository root with the existing Runtime image present.
-FROM pi-saas-agent-runtime:0.82.1-dev
-
-USER root
-RUN chmod -R a+rX /opt/pi-runtime

@@ -65,6 +65,13 @@ user's workspace and Pi JSONL trajectory are mounted under
 `.runtime-data/tenants/<user-id>` at the container's fixed `/runtime-data`
 root. Each Runtime uses Pi's default `read`, `write`, `edit`, and `bash` tools.
 
+The Runtime Dockerfile includes Node 24/npm, Git, Python 3.11 with `python`/pip/
+venv, native build tools, and PDF command-line utilities. To replace older test
+containers without pulling images on the test host, follow the
+[Mac build and offline deployment guide](docs/runtime-image.md): build
+`linux/amd64` on macOS, export/import the image, update `RUNTIME_DOCKER_IMAGE`,
+and recreate the Runtime containers.
+
 Each user starts with an active `default` Workspace at
 `/runtime-data/workspaces/default`. Additional Workspace names are safe
 lowercase directory names; Workspace count and the shared `workspaces/` soft
