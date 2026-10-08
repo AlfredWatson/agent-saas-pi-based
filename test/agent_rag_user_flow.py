@@ -93,7 +93,8 @@ def remove_agent_profile_and_binding(flow: AgentUserFlow) -> list[str]:
         if path.endswith("None"):
             continue
         try:
-            flow.request("DELETE", path, expected=204, label=label)
+            # Workspace deletion also cascades its profiles and bindings.
+            flow.request("DELETE", path, expected=(204, 404), label=label)
         except Exception as exc:
             errors.append(f"{label}: {exc}")
     return errors

@@ -739,6 +739,7 @@ class AgentUserFlow:
             self.event("cleanup-skipped", resources=self.resources)
             return []
         errors: list[str] = []
+        workspace_deleted = False
         if self.workspace_id:
             try:
                 self.request(
@@ -747,6 +748,7 @@ class AgentUserFlow:
                     expected=204,
                     label="cleanup-delete-workspace",
                 )
+                workspace_deleted = True
             except Exception as exc:
                 errors.append(f"workspace {self.workspace_id}: {exc}")
         if self.profile_id:
@@ -754,7 +756,7 @@ class AgentUserFlow:
                 self.request(
                     "DELETE",
                     f"/agent-profiles/{self.profile_id}",
-                    expected=204,
+                    expected=(204, 404) if workspace_deleted else 204,
                     label="cleanup-delete-profile",
                 )
             except Exception as exc:
@@ -764,7 +766,7 @@ class AgentUserFlow:
                 self.request(
                     "DELETE",
                     f"/provider-bindings/{self.binding_id}",
-                    expected=204,
+                    expected=(204, 404) if workspace_deleted else 204,
                     label="cleanup-disable-provider-binding",
                 )
             except Exception as exc:

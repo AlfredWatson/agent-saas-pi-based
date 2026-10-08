@@ -1,0 +1,159 @@
+[
+  {
+    "Config": "blobs/sha256/fbac57f177c8959e166492d6e2f786ea066bd07a82d995f9fa4e1175b71647f0",
+    "RepoTags": [
+      "pi-saas-agent-runtime:0.82.1-tools-20260930"
+    ],
+    "Layers": [
+      "blobs/sha256/774043ccc8ccd0d0833a9ee0792142ab7ad93df971e59dd248fbf82db16d0150",
+      "blobs/sha256/eab09f3e3981ba4ceab089988dd081db334f2221594d7873f6b9e123f32d2105",
+      "blobs/sha256/1c473ca5523b8180b93f87dd2961339837b4d84db4d4998197a64984462b5164",
+      "blobs/sha256/2a11efab31915186066efa212f7ba10e7ff63c5d49d21d07c4a8377a2993e70b",
+      "blobs/sha256/a0498254f698ab1b2c7d0d1ce51ebdea22c1f01e620433118a5c764fab93a3dc",
+      "blobs/sha256/ea41dc3726fd77ff6d09aa4644396c28b690597b29c7205bc0f048947e5e9ffd",
+      "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+      "blobs/sha256/0fe38e6ce62e8c6db291d371900720e64d1ee8d2a12baa5649502dd4dfb84875",
+      "blobs/sha256/22cb4208b8c7ab28021a7c56ac09020aba155c80ecc949b79554796ce619d883",
+      "blobs/sha256/8fe7e6b36983acc899f5946c3f24fbc971c8c716feed60834a7a69fe655eeb4f",
+      "blobs/sha256/f59c21d445507c13e0b4d4f2cd1cab13256e3f5082e6c1eab8b6f7834469301b",
+      "blobs/sha256/563e9ab5ab7df5fb6bf606ccd3e1166e1108b1eff0e5f304e62d6194256dae0f",
+      "blobs/sha256/94e04dcc905e036c7182151c57fe637d3462e6bd81a8cc763d330c78cb44b416"
+    ]
+  },
+  {
+    "Config": "blobs/sha256/26caa68330b9af133291c41ad16862824bf5aa27b6a279b284db0022bf67a1b0",
+    "RepoTags": [
+      "gzdaniel/postgres-for-rag:pg18-age-pgvector"
+    ],
+    "Layers": [
+      "blobs/sha256/57fb71246055257a374deb7564ceca10f43c2352572b501efc08add5d24ebb61",
+      "blobs/sha256/afff1a729121c8aa09d38bbf60c20fc014c40b9059a98dd77ca09b6b48681e6a",
+      "blobs/sha256/de11576bde87eebf5cca0f7edea12158e1eb2edfedb5e0cfa8262ef865942a1c",
+      "blobs/sha256/a7ee000e310e5fc4c3e024aeddac6edca8b894082155a209cd803406c6de41bd",
+      "blobs/sha256/7a97a7bd35bbb153a07deb0ad23f543f6d824766b5d0ee1f723b76ed21ae93e5",
+      "blobs/sha256/33948d124eb7a8ed38a666356db61dbb7109ad7adca641b2edc1b5f12a158df7",
+      "blobs/sha256/c2c802328ad41dbfdd8c8b16f24d5dc997d0fc12fad231f2af0ebdc0521c262f",
+      "blobs/sha256/18066de916e4480c1ca92fe2f3e995426ec136c08aba3b0e275be5583b55262a",
+      "blobs/sha256/1ca95f4e0c8d01768fcbbe35ecd2b4a948bb7ee9de2ba776670725691cfe3f27",
+      "blobs/sha256/864ac3ce35b156290f30644efe10451613529b431e086b99ed985f5a21920893",
+      "blobs/sha256/1a15b8bfb2059bbc6c5fc5f7ebb7d8d5835d81fac276fef898fbc36e8a9111fe",
+      "blobs/sha256/93fccb407618466c1e85e257aa84a62fc0e51e4426b8b56b8de9eacc755184fd",
+      "blobs/sha256/19d3ada5fe0c7513b90ca348454a8987e3236762da76e60c03c6560c04ec2e40",
+      "blobs/sha256/452cc39d6b3244be9adf920b0d8589f49dc449793961e6f48d7a7f032b1cc980",
+      "blobs/sha256/51b43e7ffb6f54e8500a5007e7a260df59758e088acc65039a5d975efb63f439",
+      "blobs/sha256/f15ac05beaff8f2323fd457efc36e8d896607b3b2bbfbc301d36e58d0eb95404",
+      "blobs/sha256/081449ed5f78973dc1a44df4a8b2ae73b7d93d61157396edb13cc85e590df34f",
+      "blobs/sha256/c2d4ede4159bdfcc8f1b175507cebb0169408ed401370e5869ed949e5bda762b",
+      "blobs/sha256/fdaa621a6343ec80b535b2de75595d1909c038565a10c92c6dfef1c570394a65",
+      "blobs/sha256/dd7062d178673483d37e4bd5ee5aa2dd72ff003ab273ef8b889ef65dad7eae8d",
+      "blobs/sha256/e62629f55409513514dbbc6a2025017f66e3859e826e59b594795fab3fe048bb"
+    ]
+  },
+  {
+    "Config": "blobs/sha256/5509c0097c6064aa8a3b1df58f1d950e67090fffa6678ae8f3f1dc2385f12deb",
+    "RepoTags": [
+      "redis:7.4-alpine"
+    ],
+    "Layers": [
+      "blobs/sha256/897d797d2723cf0e318402f4d6f37d51b011517e5cf09246b22155f0fa90dc81",
+      "blobs/sha256/d85eda7b0b1433dc348d0e15a42da4d27801b5c642459e510385304f26624989",
+      "blobs/sha256/9516b0cd89c9d0f96f1c960afedc70849930548412f9f13560b52af6349c61a3",
+      "blobs/sha256/de4b872bfdc3c814acd020ba7ff5df5c4e80ad8e9d8e6bec95c0159340c4d155",
+      "blobs/sha256/2c96e5a02ba0d0c96f9d450eefb91ef6655ebdf0469a832a8884053e626e5c90",
+      "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+      "blobs/sha256/41caa0265cb5586dba97645a09913324fe9e4b4119e3dc3cda8a35ca93d105fc"
+    ]
+  },
+  {
+    "Config": "blobs/sha256/2e3effecd789f2fb086f5ad6af384dff07214d18195a77a2996f084b1942951b",
+    "RepoTags": [
+      "milvusdb/milvus:v3.0.1"
+    ],
+    "Layers": [
+      "blobs/sha256/7646c8da332499ae416b15479ce832db32e39a501c662e24324f595509a0d3db",
+      "blobs/sha256/1cf5982d9002e7cc4f46554c440bce8a1c2f831397b5b267386381ecfb01ed98",
+      "blobs/sha256/a5a2b380e40394c4465f299fd7096197e7dd319aa7611af64eefc734cbbceb5d",
+      "blobs/sha256/eb7e32d64ece80f489deb7c4c622cf43c8d702fe4208a59185e45d9a7778e20f",
+      "blobs/sha256/ca30be014b2d1180984d09f138a11626d97ea0452df807ef7f2a52c4f96cea32",
+      "blobs/sha256/7fbf94630e9c7a3bf088b9aa7c60f0582bc96ce49b7c80f93894c191e548c8aa",
+      "blobs/sha256/8970dd4eca13011172132e9887f80868f4f63ee21c27606704819f6140786ca8",
+      "blobs/sha256/3c1b0524e16f5afdbd6376639e92674a698fdd58235d0729a2540cd23a296dbc",
+      "blobs/sha256/f513402ec1c199239b148ce4d664f9eccc633369222ca3fa4c702366ca1350b9",
+      "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1"
+    ]
+  },
+  {
+    "Config": "blobs/sha256/ce1ffcaa22b901114f685eb972afd230849fdcd8c90a36f31d7dfa7072d00158",
+    "RepoTags": [
+      "quay.io/coreos/etcd:v3.5.25"
+    ],
+    "Layers": [
+      "blobs/sha256/f5083dc2076daab3912e4bbd139dbfc054d48e5c7bc1f388e12a66d5ecb91c86",
+      "blobs/sha256/c19bc6e0f5a5a1b0af7d1b058af74c74ee22a126901346cd469ea1a22a622bd9",
+      "blobs/sha256/4d6eccef01ebb1b9b5aa63d91abafaf2ceeac7ab86767a1deef6cf3e6935ae2a",
+      "blobs/sha256/02c91f6b395a6b06d17b8985a2db90aef7b09feedff77eff1f7c269161263a9b",
+      "blobs/sha256/ffdf8cfdbafeabe2762d2dde33e36f1b87dfa967ae34811ff5342ebe8233eb4b",
+      "blobs/sha256/50d2b2cd67880cbdac647edf0295c59ca5c7a54ae2512547960132c4861741d1",
+      "blobs/sha256/1e45aa110bce64887bed49d9216b825d63437fdca5d53a1f879e17bc35691e0e",
+      "blobs/sha256/0b2215fb07602fba31abe9852102a9a15baebc13afe0a1c8904bfaec08abb99b",
+      "blobs/sha256/b4aa04aa577f2b2f4b4a930e905d091b68b0719ec302b9abca710ffae50ebcaa",
+      "blobs/sha256/a97b9dcac04afbc295431c6a36a5ba65f42b2804647d34e4f578412d4475dca6",
+      "blobs/sha256/f5ceaaa2f4b47256c44e2cdae5cbbf663f8269e6ee345e31b75da5a97974ca62",
+      "blobs/sha256/4e63960586870734ff9c9999e40315097de46bc87fd541a08ddd7fbed8ed70ea",
+      "blobs/sha256/1d382a547e9df0bafa516b74e2ea68a4ddd8f9b8aee8a7b23958d6e3d5042e78",
+      "blobs/sha256/80e08f6ea5773b5d889c7300cbd6a6bc75973dcd08f251a4c7be9e2feec87b05"
+    ]
+  },
+  {
+    "Config": "blobs/sha256/6aed1b6949018d1659310e66dc076711c9a9efeffa578b337ac3d1b82e0e9153",
+    "RepoTags": [
+      "quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z"
+    ],
+    "Layers": [
+      "blobs/sha256/37285460d3adf2f92371105865893f5459b0d4ca5f87155f880caed114d9da02",
+      "blobs/sha256/6939153d46b3326837cd229456c6126de27a9cc067ed7eebe52980a25cc551a6",
+      "blobs/sha256/cf24eede0953b3eca7ddfb7367f2f01724afbc0e3ac57d21d87ce149fa11d66d",
+      "blobs/sha256/fc7ad844b0d831b3d5afa4daa6f54baf3f2a49c0f656c7f0ed8b369da0d025f9",
+      "blobs/sha256/d165121d43e145e5d6d524f848aece94b5786f18b62e9f33d9a0ac0d5fe2e5d8",
+      "blobs/sha256/e01893c6386cfcbf5cf60cbcfef2395c01019a560ae4ec21fa25e2b90a668cff",
+      "blobs/sha256/443b3798a081658557cedc2787cc7e8aa5930bd6cbdf6158fd963d5b069545db",
+      "blobs/sha256/4858ff9ca1d17811fa55b4a6ceee7ed31f7f96110064be30f22ad6189856b7c0",
+      "blobs/sha256/6017f2cd06914173d0329d497778cfefed89391994384f6c1d3b1d1a95aeecc5"
+    ]
+  },
+  {
+    "Config": "blobs/sha256/a221f3391b5eabc5b0b293b65958a28f10d7015be67e4d8cc33a5e4e60e6f3ca",
+    "RepoTags": [
+      "chromadb/chroma:1.5.9"
+    ],
+    "Layers": [
+      "blobs/sha256/342ce2461d566ebf9f3ba7e72181c2f09128c63e3656c810a660a9671d1e0376",
+      "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+      "blobs/sha256/3c4c083c1d6b3da5df84843c1c82bc174c91280b2f564f6a3af9ebc02cf09acd",
+      "blobs/sha256/95ebd62fd043769e0c30b3dadfc4d136cb704588cc72a01420c848eed041b29e",
+      "blobs/sha256/80c0cfe87a8968e817fb4e9c9be4cc40550a6ac9f4b75ef1ca3a48444c3d4857"
+    ]
+  },
+  {
+    "Config": "blobs/sha256/dd57172b0bbebb29b0a96a37c1f378a317449730c36cdfe68feabe36e740a92b",
+    "RepoTags": [
+      "qdrant/qdrant:v1.19.1"
+    ],
+    "Layers": [
+      "blobs/sha256/6310eb16bf4251731feab01e8f633bf5e2d75a657ccad97f420b1f83cce457be",
+      "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+      "blobs/sha256/01b7b950b57bc202ced14f21ed86db37dcd6fbf43ffd0c80e035e9bc412704f4",
+      "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+      "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+      "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+      "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+      "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1",
+      "blobs/sha256/04f4167fa6e6bd9aaeff3fc34b21d0934a157182677b367843772082ad32c110",
+      "blobs/sha256/a511e6d517b3462d082d3cf0b04cf8c8fdfb9518130fae8c901c494f59337082",
+      "blobs/sha256/a78c358f5b0cfc63906521002a25ec04ec5209a3c9c738b06256d9bf2cec059e",
+      "blobs/sha256/2cefa048e3c15bd642fde71edea6f78a015cceba197cfd0813b576458c68d1fb",
+      "blobs/sha256/51da2846ad53626fb07ff2178cace5549f583ffb9cfb4723a613bb76a1b9d963",
+      "blobs/sha256/4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1"
+    ]
+  }
+]

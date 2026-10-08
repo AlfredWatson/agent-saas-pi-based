@@ -19,9 +19,17 @@ and owns active Pi SDK sessions and JSONL history.
 1. Build/import the Runtime image as described in [Runtime image delivery](docs/runtime-image.md).
 2. Copy `.env.example` to `.env`, set `POSTGRES_*`, and replace both secrets and the encryption key.
 3. Ensure the Gateway host can access the Docker daemon; Gateway creates the dedicated Runtime containers.
-4. When `.env` points to an existing PostgreSQL with pgvector available, start only Redis with
-   `docker compose --env-file .env -f infra/compose.dev.yml up -d redis`. For an isolated
-   development database, the same Compose file also provides the optional `postgres` service.
+4. Deploy storage with [the unified storage Compose guide](docs/storage-deployment.md).
+   To replace the current PostgreSQL 18 test container with PostgreSQL 17, follow
+   [Mac pull, offline import and Compose rebuild](docs/postgres17-offline.md).
+   For production without external network access, use the prepared
+   [offline image bundle](docker/images/README.md) and its matching PostgreSQL 18 configuration.
+   After importing its images, run `docker compose --env-file .env -f docker/storage-compose.yml
+   up -d --pull never --wait` for PostgreSQL/pgvector, Redis, Milvus (etcd/MinIO),
+   Chroma and Qdrant. Set `VECTOR_BASE=pmcq` to enable all vector backends;
+   use `VECTOR_BASE=p` and append `postgres redis` to start only the required stores.
+   If PostgreSQL already exists, retain its connection settings and select the other
+   services explicitly. Chroma uses host port 18000 to avoid Gateway port 8000.
 5. Install Python dependencies with `uv sync`, then run
    `uv run python scripts/start_gateway.py --reload`. Without `--host` or
    `--port`, the Gateway listens on `GATEWAY_HOST` and `GATEWAY_PORT` from
@@ -40,7 +48,7 @@ email and password configuration.
 The RAG API is scoped below each Workspace. A Session may explicitly bind
 Workspace knowledge bases and expose them to Pi as a constrained `rag_search`
 tool; Gateway remains the only component allowed to access RAG storage and
-models. See [Multi-tenant RAG](docs/rag.md) and [Runtime image delivery](docs/runtime-image.md)
+models. See [Multi-tenant RAG](docs/multi-tenant_RAG_backend.md) and [Runtime image delivery](docs/runtime-image.md)
 for lifecycle, internal-network, and image-import requirements.
 
 The default Runtime catalog is intentionally limited. A production deployment

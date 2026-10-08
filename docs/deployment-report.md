@@ -2,6 +2,10 @@
 
 > 报告日期：2026-09-11
 >
+> 2026-09-30 部署入口更新：本机已完成 PostgreSQL 17 与统一 Compose 重建，
+> 详见 [当日实测验收记录](storage-validation-20260930.md)。存储服务统一使用 [存储后端部署指南](storage-deployment.md) 和
+> `docker/storage-compose.yml`，支持 Mac 下载镜像后离线导入。下文历史验收结果不代表新 Compose 已完成现场验收。
+>
 > 依据：当前仓库的 Gateway、Runtime、Docker、Alembic、配置与测试脚本源码，以及
 > 2026-09-10 在本机既有 PostgreSQL 上执行的迁移与 Gateway 启动验证。
 >
@@ -17,7 +21,7 @@
 已具备的源码部署要素：
 
 - FastAPI Gateway 启动时执行 Alembic、确保 `platform` schema、把残留 `running` Run 标记为 `interrupted`，并在接受请求前检查 Docker Runtime 前置条件。
-- 开发 Compose 使用 `pgvector/pgvector:pg17` 和 `redis:7.4-alpine`；PostgreSQL 使用具名卷，Redis AOF 挂载到 `docker/volumes/redis/`。
+- 统一存储 Compose 使用 `pgvector/pgvector:pg17`、`redis:7.4-alpine` 及可选向量数据库；全部持久化目录位于 `docker/volumes/`。
 - RAG Worker 从 PostgreSQL 四类持久队列（parsing、chunking、vectorization、graph extraction）取任务，Redis 只保存可恢复中间结果。
 - Gateway 使用 Docker API 为每位用户创建只绑定 `127.0.0.1` 的 Runtime；租户数据在 `.runtime-data/tenants/<user-id>`。
 - Runtime 采用只读根文件系统、tmpfs、全 capability drop、`no-new-privileges` 与内存/CPU/PID 限制；源码只读挂载。
@@ -32,7 +36,7 @@
      ▼
 宿主机 FastAPI Gateway :8000 + 独立 RAG Worker
      ├──── localhost:5432 ──── PostgreSQL 17 + pgvector（Compose）
-     │        └── platform/rag schema / postgres-data volume
+     │        └── platform/rag schema / docker/volumes/postgres
      ├──── localhost:6379 ──── Redis 7.4 ACL + AOF（Compose）
      │
      └──── Docker API ──── 每用户 Runtime 容器
@@ -47,8 +51,8 @@
 | 组件          | 启动方式                       | 责任                                                     | 持久化               |
 | ------------- | ------------------------------ | -------------------------------------------------------- | -------------------- |
 | Gateway       | 宿主机`uvicorn`              | JWT、租户权限、密钥加密、API/SSE、公共投影、Runtime 编排 | PostgreSQL           |
-| PostgreSQL    | `infra/compose.dev.yml`      | `platform`/`rag` schema、pgvector 与 Alembic            | `postgres-data` 卷 |
-| Redis         | `infra/compose.dev.yml`      | RAG 可恢复中间缓存                                      | `docker/volumes/redis/` |
+| PostgreSQL    | `docker/storage-compose.yml`      | `platform`/`rag` schema、pgvector 与 Alembic            | `docker/volumes/postgres/` |
+| Redis         | `docker/storage-compose.yml`      | RAG 可恢复中间缓存                                      | `docker/volumes/redis/` |
 | RAG Worker    | 宿主机独立 Python 进程        | 文档解析、切分、向量化、图谱提取和维护操作               | PostgreSQL/Redis |
 | Agent Runtime | Gateway 按用户 Docker API 创建 | Pi SDK、活动会话、Pi JSONL、租户工作区、工具执行         | 租户目录挂载         |
 | 外部 Provider | 外部服务                       | 模型推理                                                 | 不在系统内           |
@@ -117,22 +121,17 @@ docker image inspect pi-saas-agent-runtime:0.82.1-dev --format '{{.Os}}/{{.Archi
 
 确认架构与目标节点匹配。只修改 `agent-runtime/src` 后，调用 `POST /api/v1/runtime:recreate` 可加载新挂载源码；只有锁文件、系统工具或基础镜像变更才需要重新构建/导入镜像。
 
-### 4.3 连接 PostgreSQL 并启动 Redis
+### 4.3 部署存储后端
 
-先在仓库根目录 `.env` 中设置 `POSTGRES_PASSWORD`：
+按照 [存储后端统一部署](storage-deployment.md) 配置 `.env`、在 Mac 下载并导出镜像、在测试机导入、停止冲突的旧容器并验证服务。默认包括 PostgreSQL、Redis、Milvus（etcd/MinIO）、Chroma、Qdrant：
 
 ```bash
-# 当前机器复用 .env 中已部署的 PostgreSQL
-docker compose --env-file .env -f infra/compose.dev.yml up -d redis
-docker compose --env-file .env -f infra/compose.dev.yml ps
+docker compose --env-file .env -f docker/storage-compose.yml \
+  up -d --pull never --wait --wait-timeout 180
+docker compose --env-file .env -f docker/storage-compose.yml ps
 ```
 
-`compose.dev.yml` 位于 `infra/`，因此必须显式指定仓库根目录的 `.env`；否则
-Compose 不会取得 `POSTGRES_PASSWORD`，并会在配置解析阶段失败。
-
-该 Compose 也保留可选的 PostgreSQL/pgvector 开发服务，但现有数据库部署不应启动它。
-Gateway 和 RAG Worker 在宿主机运行。当前 Redis 开发配置映射 6379，生产建议移除
-公开映射或用私网/防火墙限制。
+已有 PostgreSQL 时不要同时启动新的 `postgres`，应保留连接并显式选择其他服务。Gateway 和 worker 在宿主机运行。Compose 发布端口只绑定 loopback；Chroma 默认宿主机端口为 `18000`。更换 PostgreSQL 时需明确选择新测试库还是备份恢复，旧容器删除不等于数据迁移。
 
 ### 4.4 启动 Gateway
 
@@ -193,7 +192,7 @@ Agent 的 XLSX 工具读取、SSE 文本与工具事件、消息历史字段/顺
 
 备份必须覆盖：
 
-1. PostgreSQL 数据库和 `postgres-data` 卷；密文 Binding 必须有对应 `ENCRYPTION_KEY` 才能解密。
+1. PostgreSQL 数据库和 `docker/volumes/postgres/`；密文 Binding 必须有对应 `ENCRYPTION_KEY` 才能解密。
 2. Redis 的 `docker/volumes/redis/` AOF；它只包含可重建的处理中间缓存，但恢复后可避免重复模型调用。
 3. `.runtime-data/tenants/`；其中有用户 workspace、Pi session 文件和 JSONL 轨迹。
 4. 由密钥管理系统保护的 `ENCRYPTION_KEY`、JWT secret、Runtime shared secret 和 Redis 密码。

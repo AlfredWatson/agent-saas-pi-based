@@ -115,3 +115,7 @@ memory-bank
 /docker/volumes/**
 /tmp/**
 /frontend/node_modules/**
+
+# Offline Docker image archives are delivered separately from Git.
+/docker/images/*.tar
+/docker/images/*.partial

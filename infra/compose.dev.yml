@@ -1,3 +1,5 @@
+# Legacy scoped entry point. For new deployments use docker/storage-compose.yml
+# and docs/storage-deployment.md. Stop this stack before reusing its data mounts.
 services:
   redis:
     image: redis:7.4-alpine

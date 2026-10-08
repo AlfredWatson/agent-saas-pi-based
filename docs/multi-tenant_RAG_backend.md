@@ -34,10 +34,10 @@ not change the existing public API, database schema, or Redis key format.
 
 ## 启动
 
-现有 PostgreSQL 由 `.env` 的 `POSTGRES_*` 连接信息提供。不要启动或拉取 PostgreSQL Docker 镜像；开发 Compose 只启动 Redis：
+所有存储服务的统一入口、Mac 镜像下载和离线交付见 [存储后端部署指南](storage-deployment.md)。复用已有 PostgreSQL 时，保留 `.env` 的 `POSTGRES_*` 连接，只启动 Redis；新测试环境可通过统一 Compose 启动 PostgreSQL 和其他向量服务：
 
 ```bash
-docker compose --env-file .env -f infra/compose.dev.yml up -d redis
+docker compose --env-file .env -f docker/storage-compose.yml up -d --pull never redis
 uv run python scripts/start_gateway.py
 # 另一个终端
 uv run python scripts/start_rag_worker.py
@@ -262,7 +262,7 @@ curl -fsS "${AUTH[@]}" \
 
 ```bash
 # terminal 1
-docker compose --env-file .env -f infra/compose.dev.yml up -d redis
+docker compose --env-file .env -f docker/storage-compose.yml up -d --pull never redis
 
 # terminal 2 and 3
 uv run python scripts/start_gateway.py
